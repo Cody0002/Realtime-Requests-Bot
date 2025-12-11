@@ -20,29 +20,13 @@ windows AS (
 map_country AS (
   SELECT DISTINCT
     UPPER(a.name) AS brand,
-    CASE
-      WHEN f.reqCurrency = 'THB' THEN 'TH'
-      WHEN f.reqCurrency = 'PHP' THEN 'PH'
-      WHEN f.reqCurrency = 'BDT' THEN 'BD'
-      WHEN f.reqCurrency = 'PKR' THEN 'PK'
-      WHEN f.reqCurrency = 'IDR' THEN 'ID'
-      WHEN f.reqCurrency = 'BRL' THEN 'BR'
-      ELSE NULL
-    END AS country
+    LEFT(f.reqCurrency, 2) AS country
   FROM `kz-dp-prod.kz_pg_to_bq_realtime.ext_funding_tx` f
   LEFT JOIN `kz-dp-prod.kz_pg_to_bq_realtime.account` a ON f.accountId = a.id
   -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
   -- OPTIMIZATION 1: Filter countries early here. --
   WHERE @target_country IS NULL OR
-    CASE
-      WHEN f.reqCurrency = 'THB' THEN 'TH'
-      WHEN f.reqCurrency = 'PHP' THEN 'PH'
-      WHEN f.reqCurrency = 'BDT' THEN 'BD'
-      WHEN f.reqCurrency = 'PKR' THEN 'PK'
-      WHEN f.reqCurrency = 'IDR' THEN 'ID'
-      WHEN f.reqCurrency = 'BRL' THEN 'BR'
-      ELSE NULL
-    END = @target_country
+    LEFT(f.reqCurrency, 2) = @target_country
   -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
 ),
 -- Registrations (NAR) within each day's partial window up to "now"
@@ -74,15 +58,7 @@ total_deposit AS (
     UPPER(a.name)   AS brand,
     UPPER(a.`group`) AS `group`,
     f.id,
-    CASE
-      WHEN f.reqCurrency = 'THB' THEN 'TH'
-      WHEN f.reqCurrency = 'PHP' THEN 'PH'
-      WHEN f.reqCurrency = 'BDT' THEN 'BD'
-      WHEN f.reqCurrency = 'PKR' THEN 'PK'
-      WHEN f.reqCurrency = 'IDR' THEN 'ID'
-      WHEN f.reqCurrency = 'BRL' THEN 'BR'
-      ELSE NULL
-    END AS country,
+    LEFT(f.reqCurrency, 2) AS country,
     f.createdAt
   FROM `kz-dp-prod.kz_pg_to_bq_realtime.ext_funding_tx` f
   LEFT JOIN `kz-dp-prod.kz_pg_to_bq_realtime.ext_member` m ON f.memberId = m.id
@@ -93,15 +69,7 @@ total_deposit AS (
     -- OPTIMIZATION 2: Filter the main deposit table early to speed up the RANK() function. --
     AND (
       @target_country IS NULL OR
-      CASE
-        WHEN f.reqCurrency = 'THB' THEN 'TH'
-        WHEN f.reqCurrency = 'PHP' THEN 'PH'
-        WHEN f.reqCurrency = 'BDT' THEN 'BD'
-        WHEN f.reqCurrency = 'PKR' THEN 'PK'
-        WHEN f.reqCurrency = 'IDR' THEN 'ID'
-        WHEN f.reqCurrency = 'BRL' THEN 'BR'
-        ELSE NULL
-      END = @target_country
+      LEFT(f.reqCurrency, 2) = @target_country
     )
     -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
   QUALIFY ROW_NUMBER() OVER (PARTITION BY f.id ORDER BY f.updatedAt DESC) = 1

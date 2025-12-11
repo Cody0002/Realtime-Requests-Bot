@@ -168,17 +168,24 @@ class RealTimeBot:
     async def _ensure_allowed(self, update: Update, cmd: str) -> bool:
         """
         Returns True if user can run `cmd` in this chat.
-        Group policy (if set) is enforced for that chat.
-        If no group policy, fall back to per-user allowed_commands.
+        
+        1. Private Chats: Only ADMINS are allowed.
+        2. Groups: Enforce Group Policy first, then User Whitelist.
         """
         user = update.effective_user
         chat = update.effective_chat
         msg = update.effective_message
 
-        if not user or not chat:
-            if msg:
-                await msg.reply_text("⚠️ Cannot identify user/chat.")
-            return False
+        # --- NEW: Block non-admins in Private Chats (DM) ---
+        if chat.type in ("private", "PRIVATE"):
+            print("PRIVATE")
+            if not self._is_admin(update):
+                if msg:
+                    await msg.reply_text("⛔ Access denied. Please contact an administrator for permission.")
+                return False
+            # If Admin in DM, allow everything (or you can apply specific logic here)
+            return True
+        # ---------------------------------------------------
 
         cmd = cmd.lower()
 
@@ -556,6 +563,10 @@ class RealTimeBot:
     #     return False
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+        if not await self._ensure_allowed(update, "start"):
+            return
+        
         user = update.effective_user
         if not user:
             return await update.effective_chat.send_message("⚠️ Could not identify user.")
@@ -697,6 +708,9 @@ class RealTimeBot:
         
     # async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+        if not await self._ensure_allowed(update, "apf"):
+            return
         user = update.effective_user
 
         # Command catalog (titles + usage)
@@ -797,7 +811,7 @@ class RealTimeBot:
             parts.append("") # blank line
 
         # Common footer
-        parts.append("*📍 Supported Countries:* TH, PH, BD, PK, BR")
+        parts.append("*📍 Supported Countries:* TH, PH, BD, PK, BR, MX")
         parts.append("*🕒 Timezone:* GMT+7\n")
         parts.append("_Please reduce your font size if the table appears misaligned_")
 
@@ -1086,7 +1100,7 @@ class RealTimeBot:
         try:
             if not context.args:
                 return await update.effective_chat.send_message(
-                    "Usage: `/dpf a` or `/dpf <COUNTRY>` (TH, PH, BD, PK, BR)",
+                    "Usage: `/dpf a` or `/dpf <COUNTRY>` (TH, PH, BD, PK, BR, MX)",
                     parse_mode=ParseMode.MARKDOWN,
                 )
 

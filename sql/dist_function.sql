@@ -22,15 +22,7 @@ WITH deposit_raw AS (
 ),
 normalized AS (
   SELECT
-    CASE
-      WHEN reqCurrency = 'THB' THEN 'TH'
-      WHEN reqCurrency = 'PHP' THEN 'PH'
-      WHEN reqCurrency = 'BDT' THEN 'BD'
-      WHEN reqCurrency = 'PKR' THEN 'PK'
-      WHEN reqCurrency = 'IDR' THEN 'ID'
-      WHEN reqCurrency = 'BRL' THEN 'BR'
-      ELSE NULL
-    END AS country,
+    LEFT(reqCurrency, 2) AS country,
     COALESCE(method, 'UNKNOWN') AS method,
     reqCurrency AS currency,
     net_amount

@@ -16,15 +16,7 @@ base AS (
     f.reqCurrency,
     UPPER(a.name)  AS brand,       -- ✅ brand = account.name
     UPPER(a.`group`) AS `group`,     -- ✅ group = account.group
-    CASE
-      WHEN f.reqCurrency = 'THB' THEN 'TH'
-      WHEN f.reqCurrency = 'PHP' THEN 'PH'
-      WHEN f.reqCurrency = 'BDT' THEN 'BD'
-      WHEN f.reqCurrency = 'PKR' THEN 'PK'
-      WHEN f.reqCurrency = 'IDR' THEN 'ID'
-      WHEN f.reqCurrency = 'BRL' THEN 'BR'
-      ELSE NULL
-    END AS country
+    LEFT(reqCurrency, 2) AS country
   FROM `kz-dp-prod.kz_pg_to_bq_realtime.ext_funding_tx` AS f
   LEFT JOIN `kz-dp-prod.kz_pg_to_bq_realtime.account` a
     ON f.accountId = a.id
@@ -37,15 +29,7 @@ base AS (
     ----------------------------------------------------------------------
     -- OPTIMIZATION: Filter by country at the earliest possible step.
     AND (@target_country IS NULL OR
-          CASE
-            WHEN f.reqCurrency = 'THB' THEN 'TH'
-            WHEN f.reqCurrency = 'PHP' THEN 'PH'
-            WHEN f.reqCurrency = 'BDT' THEN 'BD'
-            WHEN f.reqCurrency = 'PKR' THEN 'PK'
-            WHEN f.reqCurrency = 'IDR' THEN 'ID'
-            WHEN f.reqCurrency = 'BRL' THEN 'BR'
-            ELSE NULL
-          END = @target_country)
+          LEFT(reqCurrency, 2) = @target_country)
     ----------------------------------------------------------------------
   -- DEDUPLICATION: Keep only the latest record for each transaction ID.
   QUALIFY ROW_NUMBER() OVER (PARTITION BY f.id ORDER BY f.updatedAt DESC) = 1

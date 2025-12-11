@@ -2,15 +2,7 @@ WITH all_transactions AS (
   -- STEP 1: Scan the base table
   SELECT
     f.type,
-    CASE
-      WHEN f.reqCurrency = 'THB' THEN 'TH'
-      WHEN f.reqCurrency = 'PHP' THEN 'PH'
-      WHEN f.reqCurrency = 'BDT' THEN 'BD'
-      WHEN f.reqCurrency = 'PKR' THEN 'PK'
-      WHEN f.reqCurrency = 'IDR' THEN 'ID'
-      WHEN f.reqCurrency = 'BRL' THEN 'BR'
-      ELSE NULL
-    END AS country,
+    LEFT(f.reqCurrency, 2) AS country,
     f.createdAt,
     f.completedAt,
     f.providerKey,
@@ -39,14 +31,7 @@ WITH all_transactions AS (
 
     -- 1. Country Filter
     AND (@selected_country IS NULL OR 
-         (CASE 
-            WHEN f.reqCurrency = 'THB' THEN 'TH'
-            WHEN f.reqCurrency = 'PHP' THEN 'PH'
-            WHEN f.reqCurrency = 'BDT' THEN 'BD'
-            WHEN f.reqCurrency = 'PKR' THEN 'PK'
-            WHEN f.reqCurrency = 'BRL' THEN 'BR'
-            ELSE NULL 
-          END) = @selected_country)
+         (LEFT(f.reqCurrency, 2)) = @selected_country)
     
     -- 2. Precise Date Filter (This now runs on only ~2 days of data instead of All-Time)
     AND DATE(DATETIME(f.insertedAt, CASE 
@@ -55,6 +40,7 @@ WITH all_transactions AS (
         WHEN f.reqCurrency = 'PHP' THEN '+08:00' -- UTC+8
         WHEN f.reqCurrency = 'THB' THEN '+07:00' -- UTC+7
         WHEN f.reqCurrency = 'BRL' THEN '-03:00' -- UTC-3
+        WHEN LEFT(f.reqCurrency, 2) = 'MX' THEN '-06:00' -- (America/Sao_Paulo is UTC-3)
         ELSE NULL END)) = @target_date
         
   QUALIFY ROW_NUMBER() OVER (PARTITION BY f.id ORDER BY f.updatedAt DESC) = 1

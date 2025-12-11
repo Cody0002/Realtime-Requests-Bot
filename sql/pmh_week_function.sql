@@ -16,15 +16,7 @@ WITH bounds AS (
 base AS (
   SELECT
     f.type,
-    CASE
-      WHEN f.reqCurrency = 'THB' THEN 'TH'
-      WHEN f.reqCurrency = 'PHP' THEN 'PH'
-      WHEN f.reqCurrency = 'BDT' THEN 'BD'
-      WHEN f.reqCurrency = 'PKR' THEN 'PK'
-      WHEN f.reqCurrency = 'IDR' THEN 'ID'
-      WHEN f.reqCurrency = 'BRL' THEN 'BR'
-      ELSE NULL
-    END AS country,
+    LEFT(f.reqCurrency, 2) AS country,
     f.createdAt,
     f.completedAt,
     f.providerKey,
@@ -40,6 +32,7 @@ base AS (
         WHEN f.reqCurrency = 'PHP' THEN '+08:00' -- UTC+8
         WHEN f.reqCurrency = 'THB' THEN '+07:00' -- UTC+7
         WHEN f.reqCurrency = 'BRL' THEN '-03:00' -- (America/Sao_Paulo is UTC-3)
+        WHEN LEFT(f.reqCurrency, 2) = 'MX' THEN '-06:00' -- (America/Sao_Paulo is UTC-3)
         -- WHEN f.reqCurrency = 'IDR' THEN '+07:00' -- (Asia/Jakarta is UTC+7)
         ELSE NULL END)) AS local_date
   FROM `kz-dp-prod.kz_pg_to_bq_realtime.ext_funding_tx` AS f
@@ -47,15 +40,7 @@ base AS (
   WHERE f.type IN ('deposit','withdraw')
     AND f.status IN ('completed','error','timeout', 'errors')
     AND (@selected_country IS NULL OR
-         (CASE
-            WHEN f.reqCurrency = 'THB' THEN 'TH'
-            WHEN f.reqCurrency = 'PHP' THEN 'PH'
-            WHEN f.reqCurrency = 'BDT' THEN 'BD'
-            WHEN f.reqCurrency = 'PKR' THEN 'PK'
-            WHEN f.reqCurrency = 'IDR' THEN 'ID'
-            WHEN f.reqCurrency = 'BRL' THEN 'BR'
-            ELSE NULL
-          END) = @selected_country)
+         (LEFT(f.reqCurrency, 2) ) = @selected_country)
   QUALIFY ROW_NUMBER() OVER (PARTITION BY f.id ORDER BY f.updatedAt DESC) = 1
 ),
 
