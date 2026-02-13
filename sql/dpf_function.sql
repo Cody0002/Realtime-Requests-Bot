@@ -24,7 +24,7 @@ base AS (
   WHERE f.type   = 'deposit'
     AND f.status = 'completed'
     -- UTC bounds covering [today-2 00:00 .. today+1 00:00) local
-    AND f.insertedAt >= TIMESTAMP(DATETIME(DATE_SUB(p.today_date, INTERVAL 2 DAY), TIME '00:00:00'), p.tz)
+    AND f.insertedAt >= TIMESTAMP(DATETIME(DATE_SUB(p.today_date, INTERVAL 3 DAY), TIME '00:00:00'), p.tz)
     AND f.insertedAt <  TIMESTAMP(DATETIME(DATE_ADD(p.today_date,  INTERVAL 1 DAY), TIME '00:00:00'), p.tz)
     ----------------------------------------------------------------------
     -- OPTIMIZATION: Filter by country at the earliest possible step.
@@ -45,7 +45,7 @@ capped AS (
     `group`,
     netAmount
   FROM base, params p
-  WHERE local_date BETWEEN DATE_SUB(p.today_date, INTERVAL 2 DAY) AND p.today_date
+  WHERE local_date BETWEEN DATE_SUB(p.today_date, INTERVAL 3 DAY) AND p.today_date
     AND local_time < p.now_time
     AND netAmount IS NOT NULL
 ),

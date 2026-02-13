@@ -125,7 +125,9 @@ def inline_code_line(s: str) -> str:
     return f"`s`"
 
 def count_separators(s: str) -> int:
-    return s.count("-") + s.count(",")
+    s = str(s)
+    print("MINUS, PLUS", s.count("+") + s.count("-"))
+    return s.count("-") + s.count(",") + s.count("+") + s.count("-")
 
 current_time, _ = get_date_range_header()
 
@@ -248,23 +250,37 @@ def render_apf_table_v2(country, rows, max_width=72, brand=False, widths=None, s
 from collections import defaultdict
 from telegram.constants import ParseMode
 
-def _aggregate_by_date_for_group(rows, group_label):
-    """
-    Collapse brand rows into a per-date total block so we can render the
-    group summary as a single 'pseudo-brand'. (Layout only; keeps your format.)
-    """
+def _aggregate_dpf_by_date(rows: list[dict], pseudo_brand: str):
+    """Per-date totals across given rows; averages averaged; % is now Growth (Today-Yest)/Yest."""
     by_date = {}
     for r in rows:
-        d = r.get("date")
-        if d not in by_date:
-            by_date[d] = {"date": d, "brand": group_label, "country": r.get("country"),
-                          "NAR": 0, "FTD": 0, "STD": 0, "TTD": 0}
-        by_date[d]["NAR"] += int(r.get("NAR", 0) or 0)
-        by_date[d]["FTD"] += int(r.get("FTD", 0) or 0)
-        by_date[d]["STD"] += int(r.get("STD", 0) or 0)
-        by_date[d]["TTD"] += int(r.get("TTD", 0) or 0)
-    # newest first
-    return sorted(by_date.values(), key=lambda x: str(x["date"]), reverse=True)
+        d = str(r.get("date", ""))
+        by_date.setdefault(d, {"date": d, "brand": pseudo_brand, "TotalDeposit": 0.0, "AvgList": []})
+        by_date[d]["TotalDeposit"] += _num_to_float(r.get("TotalDeposit", 0))
+        if r.get("AverageDeposit") is not None:
+            by_date[d]["AvgList"].append(_num_to_float(r["AverageDeposit"]))
+    
+    collapsed = []
+    for d, obj in by_date.items():
+        avg_val = (sum(obj["AvgList"])/len(obj["AvgList"])) if obj["AvgList"] else None
+        collapsed.append({"date": d, "brand": pseudo_brand, "AverageDeposit": avg_val, "TotalDeposit": obj["TotalDeposit"]})
+    
+    # Sort descending (Newest date at index 0)
+    collapsed.sort(key=lambda x: x["date"], reverse=True)
+
+    # --- NEW LOGIC: Growth vs Previous Day ---
+    for i in range(len(collapsed)):
+        # If there is a "next" item in the list, that is the "previous day"
+        if i + 1 < len(collapsed):
+            curr_total = collapsed[i]["TotalDeposit"]
+            prev_total = collapsed[i+1]["TotalDeposit"]
+            # (Today - Yesterday) / Yesterday
+            collapsed[i]["Weightage"] = (curr_total - prev_total) / prev_total if prev_total != 0 else 0.0
+        else:
+            # Oldest date has no comparison
+            collapsed[i]["Weightage"] = 0.0
+
+    return collapsed
 
 def render_group_then_brands(country: str, group_name: str, group_rows: list[dict], max_width=72) -> str:
     """
@@ -527,7 +543,7 @@ def render_channel_distribution(country: str, rows: list[dict], topn: int = 5) -
     codeA = [(inline_code_line(l)) for l in linesA]
 
     codeB = [escape_md_v2(l) for l in linesB]
-    halfB = f"`{"\n".join([*codeB])}`"
+    halfB = f"`{'\n'.join([*codeB])}`"
     # print(halfB)
     # print("\n".join([title, *codeA]))
     return "\n".join([title,*codeA, "", inline_code(escape_md_v2(sepA)), halfB])
@@ -581,13 +597,14 @@ def _fmt_commas0(x):
         return f"{_num_to_float(x):,.0f}"
     except Exception:
         return str(x)
-
-def _fmt_pct_int(x):
-    if x is None: return "0"
+    
+def _fmt_pct_int(x, j=0):
+    if x is None:
+        return "+0"
     try:
-        return f"{_num_to_float(x)*100:.0f}"
+        return f"{_num_to_float(x)*100:+.0f}"
     except Exception:
-        return "0"
+        return "+0"
 
 def inline_code_line(s: str) -> str:
     return f"`{str(s).replace('`','ˋ')}`"
@@ -637,13 +654,14 @@ def render_dpf_table_v2(country, rows, max_width=72, brand=False, widths=None, s
     # escape_md_v2, stylize, inline_code_line, wrap_separators, backtick_with_trailing_spaces
     # _num_to_float, _fmt_commas0, _fmt_pct_int, _shrink_date, _sum_field,
     # count_separators, get_date_range_header
-    # --- AFTER ---
+
     FLAGS = {"TH":"🇹🇭","PH":"🇵🇭","BD":"🇧🇩","PK":"🇵🇰","ID":"🇮🇩", "BR":"🇧🇷"}
     CURRENCIES = {"TH":"THB","PH":"PHP","BD":"BDT","PK":"PKR","ID":"IDR", "BR":"BRL"}
     flag     = FLAGS.get(country, "")
     currency = CURRENCIES.get(country, "")
 
     import pandas as pd
+    from collections import defaultdict
 
     # group by brand
     brand_groups = defaultdict(list)
@@ -670,10 +688,23 @@ def render_dpf_table_v2(country, rows, max_width=72, brand=False, widths=None, s
                 "AverageDeposit": avg_val,
                 "TotalDeposit": obj["TotalDeposit"]
             })
+        
+        # Sort descending (Newest first)
         collapsed.sort(key=lambda x: x["date"], reverse=True)
-        latest_total = collapsed[0]["TotalDeposit"] if collapsed else 0.0
-        for rr in collapsed:
-            rr["Weightage"] = (rr["TotalDeposit"]/latest_total) if latest_total else None
+        
+        # --- NEW CALCULATION LOGIC: (Today - Yesterday) / Yesterday ---
+        for i in range(len(collapsed)):
+            if i + 1 < len(collapsed):
+                curr_total = collapsed[i]["TotalDeposit"]
+                prev_total = collapsed[i+1]["TotalDeposit"]
+                collapsed[i]["Weightage"] = (curr_total - prev_total) / prev_total if prev_total != 0 else 0.0
+            else:
+                collapsed[i]["Weightage"] = 0.0
+
+        # 👇 FILTERING LOGIC: Keep only top 3 days for this brand
+        if len(collapsed) > 3:
+            collapsed = collapsed[:3]
+
         prepped.extend(collapsed)
 
     # string render per row (already formatted)
@@ -684,7 +715,8 @@ def render_dpf_table_v2(country, rows, max_width=72, brand=False, widths=None, s
             _fmt_commas0(r["TotalDeposit"]),
             _fmt_pct_int(r["Weightage"])
         )
-       # Use provided widths/separators or calculate them if not provided
+    
+    # Use provided widths/separators or calculate them if not provided
     if widths and separators:
         w0, w1, w2, w3 = widths
         x0, x1, x2, x3 = separators
@@ -705,43 +737,41 @@ def render_dpf_table_v2(country, rows, max_width=72, brand=False, widths=None, s
         x2 = max(count_separators("Total"), *(count_separators(x) for x in totals_all)) if totals_all else count_separators("Total")
         x3 = max(count_separators("%"),     *(count_separators(x) for x in w_all))      if w_all      else count_separators("%")
 
-    # widths = (w0, w1, w2, w3)
-    list_separators = [x0 + x1, x2, x3, 0]
-    print("LIST SEPERATORS:", x0, x1, x2, x3)
     # plain-space aligned row (no figure spaces)
     def fmt_row(d, a, t, w):
         d = str(d); a = str(a); t = str(t); w = str(w)
         _a = count_separators(a)
         _t = count_separators(t)
-
+        _x = count_separators(w)
+        print('MAX SEP', x3, 'CURRENT SEP', _x)
         return "  ".join([
             d.ljust(w0),
             replace_spacing(a.rjust(w1), max_sep=x1, cur_sep=_a),
             replace_spacing(t.rjust(w2), max_sep=x2, cur_sep=_t),
-            w.rjust(w3),
+            # replace_spacing(w.rjust(w3), max_sep=x3, cur_sep=_x)
+            w.ljust(w3),
         ])
-    
+        
     def fmt_header_row(d, a, t, w):
         d = str(d); a = str(a); t = str(t); w = str(w)
         _d = count_separators(d)
         _a = count_separators(a)
         _t = count_separators(t)
+        _x = count_separators(w)
         return "  ".join([
             replace_spacing(d.ljust(w0), max_sep=x0, cur_sep=_d),
             replace_spacing(a.rjust(w1), max_sep=x1, cur_sep=_a),
             replace_spacing(t.rjust(w2), max_sep=x2, cur_sep=_t),
-            w.rjust(w3),
+            # replace_spacing(w.rjust(w3), max_sep=x3, cur_sep=_x),
+            w.ljust(w3),
         ])
-    
+        
     # header + horizontal sep built from real widths
     header = fmt_header_row("Date", "Avg", "Total", "%")
-    sep    = "-".join(["-" * w0, "-" * w1, "-" * w2, "-" * w3])
-
+    
     # --- build output (APF style) ---
     current_time, _ = get_date_range_header()
     title    = stylize(f"*{escape_md_v2(f'COUNTRY: {country} {flag} ({currency})')}*", style="sans_bold")
-    print("BRAND GROUPS", brand_groups)
-    print(list(brand_groups.keys()))
     
     if list(brand_groups.keys())[0] == "TOTAL":
         subtitle = "\n" + escape_md_v2(f"{country} Deposit Performance by Country \n(up to {current_time} GMT+7)")
@@ -751,11 +781,8 @@ def render_dpf_table_v2(country, rows, max_width=72, brand=False, widths=None, s
     parts = []
     
     if not brand:
-        # parts.append(title + subtitle)
         parts.append(subtitle)
-        # parts.append(inline_code_line(sep))
         parts.append(wrap_separators(inline_code_line(header)))
-        # parts.append(inline_code_line(sep))
 
     # sort brands by TotalDeposit DESC
     brands_sorted = sorted(
@@ -776,22 +803,13 @@ def render_dpf_table_v2(country, rows, max_width=72, brand=False, widths=None, s
             parts.append("")  # blank line between brands
         first = False
 
-        # if brand == False:
-            # parts.append(stylize(f"*{escape_md_v2(str(brand_name))}*", style="sans_bold"))
-
-        # if brand == True:
         parts.append(stylize(f"*{escape_md_v2(str(brand_name))}*", style="sans_bold"))
         
         # rows for this brand (already collapsed in prepped)
         for r in filter(lambda x: x["brand"] == brand_name, prepped):
- 
             d, a, t, w = _row_strs(r)
             line = fmt_row(d, escape_md_v2(a), escape_md_v2(t), escape_md_v2(w))
-
-            # print(line)
             parts.append(wrap_separators(inline_code_line(line)))
-
-    # print(parts)
 
     return "\n".join(parts)
 
@@ -803,10 +821,68 @@ def replace_spacing(s: str, max_sep: int, cur_sep: int):
         return s.replace(" "*dif, f"{" "*dif}", 1)
     else:
         return s
+
+def _generate_dpf_summary_message(rows: list[dict]) -> str:
+    """
+    Generates the text summary comparing the latest two dates.
+    """
+    # 1. Aggregate totals by date (returns sorted: [Today, Yesterday, ...])
+    # We use a temp label just to utilize the aggregator
+    total_rows = _aggregate_dpf_by_date(rows, pseudo_brand="TOTAL")
     
+    # We need at least 2 days to compare
+    if len(total_rows) < 2:
+        return ""
+
+    latest = total_rows[0]
+    prev = total_rows[1]
+
+    # 2. Parse Dates (Input YYYY-MM-DD -> Output "11 Feb")
+    def _fmt_date_short(d_str):
+        try:
+            dt = datetime.strptime(str(d_str), "%Y-%m-%d")
+            return dt.strftime("%d %b")
+        except:
+            return str(d_str)
+
+    d_latest_str = _fmt_date_short(latest["date"])
+    d_prev_str = _fmt_date_short(prev["date"])
+
+    # 3. Math
+    val_latest = float(latest["TotalDeposit"] or 0)
+    val_prev = float(prev["TotalDeposit"] or 0)
+
+    diff_abs = val_latest - val_prev
+    
+    # Growth % = (Current - Prev) / Prev
+    if val_prev != 0:
+        growth_pct = (diff_abs / val_prev) * 100.0
+    else:
+        growth_pct = 100.0 if val_latest > 0 else 0.0
+
+    # 4. Formatting
+    sign = "+" if diff_abs >= 0 else "" 
+    abs_str = _fmt_number(diff_abs) 
+    
+    # 5. Construct Message with Markdown V2 Escaping
+    safe_prev_date = escape_md_v2(d_prev_str)
+    safe_latest_date = escape_md_v2(d_latest_str)
+    safe_sign = escape_md_v2(sign)
+    safe_abs = escape_md_v2(abs_str)
+    safe_pct = escape_md_v2(f"{growth_pct:.0f}")
+
+    line1 = (f"Between {safe_prev_date} and {safe_latest_date}, the total changed by "
+             f"{safe_sign}{safe_pct}% \\({safe_sign} {safe_abs} in absolute terms\\)\\.")
+    
+    # Italicize the Note
+    note_content = "Note: As of 12 February, the % calculation was updated to (Today - Yesterday) / Yesterday."
+    line2 = f"_{escape_md_v2(note_content)}_"
+
+    return f"{line1}\n{line2}"
+
 # ------- aggregate by date (used for group summary / country total) -------
 def _aggregate_dpf_by_date(rows: list[dict], pseudo_brand: str):
-    """Per-date totals across given rows; averages averaged; % vs latest date."""
+    """Per-date totals across given rows; averages averaged; % vs Previous Day."""
     by_date = {}
     for r in rows:
         d = str(r.get("date", ""))
@@ -814,14 +890,28 @@ def _aggregate_dpf_by_date(rows: list[dict], pseudo_brand: str):
         by_date[d]["TotalDeposit"] += _num_to_float(r.get("TotalDeposit", 0))
         if r.get("AverageDeposit") is not None:
             by_date[d]["AvgList"].append(_num_to_float(r["AverageDeposit"]))
+    
     collapsed = []
     for d, obj in by_date.items():
         avg_val = (sum(obj["AvgList"])/len(obj["AvgList"])) if obj["AvgList"] else None
         collapsed.append({"date": d, "brand": pseudo_brand, "AverageDeposit": avg_val, "TotalDeposit": obj["TotalDeposit"]})
+    
+    # Sort descending (Newest first)
     collapsed.sort(key=lambda x: x["date"], reverse=True)
-    latest_total = collapsed[0]["TotalDeposit"] if collapsed else 0.0
-    for rr in collapsed:
-        rr["Weightage"] = (rr["TotalDeposit"]/latest_total) if latest_total else None
+    
+    # --- NEW CALCULATION LOGIC: (Today - Yesterday) / Yesterday ---
+    for i in range(len(collapsed)):
+        if i + 1 < len(collapsed):
+            curr_total = collapsed[i]["TotalDeposit"]
+            prev_total = collapsed[i+1]["TotalDeposit"]
+            collapsed[i]["Weightage"] = (curr_total - prev_total) / prev_total if prev_total != 0 else 0.0
+        else:
+            collapsed[i]["Weightage"] = 0.0
+
+    # 👇 FILTERING LOGIC: Keep only top 3 days
+    if len(collapsed) > 3:
+        collapsed = collapsed[:3]
+
     return collapsed
 
 # ------- DPF group -> brands (no inline tick; figure spaces) -------
@@ -830,14 +920,35 @@ def render_dpf_group_then_brands(country: str, group_name: str, group_rows: list
     # 1. Aggregate group summary data
     group_summary_rows = _aggregate_dpf_by_date(group_rows, pseudo_brand=group_name.upper())
     
-    # 2. **Calculate widths based on group summary data**
+    # 2. Prepare ALL rows (Summary + Brands) to calculate the maximum required width
+    # We must simulate the breakdown logic to ensure widths cover the brands too.
+    all_width_rows = []
+    
+    # Add Summary Rows
+    all_width_rows.extend(group_summary_rows)
+    
+    # Add Brand Rows (Aggregate per brand exactly as render_dpf_table_v2 does)
+    from collections import defaultdict
+    brand_groups = defaultdict(list)
+    for r in group_rows:
+        brand_groups[r.get("brand", "Unknown")].append(r)
+    
+    for b, items in brand_groups.items():
+        # Reuse the aggregator to get the exact rows that will be printed
+        brand_collapsed = _aggregate_dpf_by_date(items, pseudo_brand=b)
+        all_width_rows.extend(brand_collapsed)
+
+    # 3. Calculate widths based on the combined list
     temp_rows = []
-    for r in group_summary_rows:
+    for r in all_width_rows:
         d = str(r.get("date", "")).replace("/", "")
         a = _fmt_commas0(r["AverageDeposit"]) if r["AverageDeposit"] is not None else "-"
         t = _fmt_commas0(r["TotalDeposit"])
         w = _fmt_pct_int(r["Weightage"])
         temp_rows.append((d, a, t, w))
+
+    if not temp_rows:
+        return ""
 
     dates_all, avgs_all, totals_all, w_all = zip(*temp_rows)
 
@@ -854,12 +965,23 @@ def render_dpf_group_then_brands(country: str, group_name: str, group_rows: list
     common_widths = (w0, w1, w2, w3)
     common_separators = (x0, x1, x2, x3)
 
-       # 3) BRAND breakdown (your function already groups by brand inside)
-    brands_block = render_dpf_table_v2(country, group_rows, max_width=max_width, brand = True)
+    # 4. Render both blocks using the calculated common widths
+    group_block = render_dpf_table_v2(
+        country, 
+        group_summary_rows, 
+        max_width=max_width, 
+        widths=common_widths, 
+        separators=common_separators
+    )
     
-    # 3. Call render_dpf_table_v2 for both tables, passing the common widths
-    group_block = render_dpf_table_v2(country, group_summary_rows, max_width=max_width, widths=common_widths, separators=common_separators)
-    brands_block = render_dpf_table_v2(country, group_rows, max_width=max_width, brand=True, widths=common_widths, separators=common_separators)
+    brands_block = render_dpf_table_v2(
+        country, 
+        group_rows, 
+        max_width=max_width, 
+        brand=True, 
+        widths=common_widths, 
+        separators=common_separators
+    )
     
     if (country != "BD") and (country != "PK"):
         sep_line = "—" * 10
@@ -882,8 +1004,22 @@ async def send_dpf_tables(update: Update, country_groups: dict[str, list[dict]],
     #     for ch in r"=-,+":
     #         text = text.replace(ch, "\\"+ch)
     #     return text
-      
+
     for country, rows in sorted(country_groups.items()):
+        # --- NEW: Send Summary Message First ---
+        try:
+            summary_msg = _generate_dpf_summary_message(rows)
+            if summary_msg:
+                await update.effective_chat.send_message(
+                    summary_msg,
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    disable_web_page_preview=True
+                )
+                await asyncio.sleep(0.5) # Short pause to ensure order
+        except Exception as e:
+            print(f"Error sending summary for {country}: {e}")
+        # --- END NEW ---
+        
         # split by group
         groups = defaultdict(list)
         for r in rows:
