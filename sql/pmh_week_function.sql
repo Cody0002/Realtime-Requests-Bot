@@ -32,7 +32,8 @@ base AS (
         WHEN f.reqCurrency = 'PHP' THEN '+08:00' -- UTC+8
         WHEN f.reqCurrency = 'THB' THEN '+07:00' -- UTC+7
         WHEN f.reqCurrency = 'BRL' THEN '-03:00' -- (America/Sao_Paulo is UTC-3)
-        WHEN LEFT(f.reqCurrency, 2) = 'MX' THEN '-06:00' -- (America/Sao_Paulo is UTC-3)
+        WHEN f.reqCurrency = 'COP' THEN '-05:00' -- UTC-5
+        WHEN LEFT(f.reqCurrency, 2) = 'MX' THEN '-06:00' -- UTC-6
         -- WHEN f.reqCurrency = 'IDR' THEN '+07:00' -- (Asia/Jakarta is UTC+7)
         ELSE NULL END)) AS local_date
   FROM `kz-dp-prod.kz_pg_to_bq_realtime.ext_funding_tx` AS f

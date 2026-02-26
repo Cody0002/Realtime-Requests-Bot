@@ -23,10 +23,10 @@ WITH all_transactions AS (
     --------------------------------------------------------------------------
     -- ✅ PARTITION PRUNING (The Optimization)
     -- We select a window wide enough to cover all your specific Timezones.
-    -- Range: [Target - 8h] (Start of PHP) to [Target + 1d + 3h] (End of BRL)
+    -- Range: [Target - 8h] (start of UTC+8) to [Target + 1d + 6h] (end of UTC-6)
     --------------------------------------------------------------------------
     AND f.insertedAt >= TIMESTAMP_SUB(TIMESTAMP(@target_date), INTERVAL 8 HOUR) 
-    AND f.insertedAt <  TIMESTAMP_ADD(TIMESTAMP_ADD(TIMESTAMP(@target_date), INTERVAL 1 DAY), INTERVAL 3 HOUR)
+    AND f.insertedAt <  TIMESTAMP_ADD(TIMESTAMP_ADD(TIMESTAMP(@target_date), INTERVAL 1 DAY), INTERVAL 6 HOUR)
     --------------------------------------------------------------------------
 
     -- 1. Country Filter
@@ -40,7 +40,8 @@ WITH all_transactions AS (
         WHEN f.reqCurrency = 'PHP' THEN '+08:00' -- UTC+8
         WHEN f.reqCurrency = 'THB' THEN '+07:00' -- UTC+7
         WHEN f.reqCurrency = 'BRL' THEN '-03:00' -- UTC-3
-        WHEN LEFT(f.reqCurrency, 2) = 'MX' THEN '-06:00' -- (America/Sao_Paulo is UTC-3)
+        WHEN f.reqCurrency = 'COP' THEN '-05:00' -- UTC-5
+        WHEN LEFT(f.reqCurrency, 2) = 'MX' THEN '-06:00' -- UTC-6
         ELSE NULL END)) = @target_date
         
   QUALIFY ROW_NUMBER() OVER (PARTITION BY f.id ORDER BY f.updatedAt DESC) = 1

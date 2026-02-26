@@ -2,7 +2,7 @@ from telegram import Update
 from telegram.constants import ParseMode
 from textwrap import wrap
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import asyncio
 import numpy as np
@@ -38,17 +38,71 @@ def stylize(text: str, style: str = "mono") -> str:
         out.append(o)
     return "".join(out)
 
-def get_date_range_header():
-    """Get the current time and date range for the header."""
-    now_bkk = datetime.now(ZoneInfo("Asia/Bangkok"))
-    current_time = now_bkk.strftime("%H:%M")
-    current_date = now_bkk.strftime("%Y-%m-%d")
-    
+COUNTRY_TIMEZONES = {
+    "TH": "Asia/Bangkok",
+    "PH": "Asia/Manila",
+    "BD": "Asia/Dhaka",
+    "PK": "Asia/Karachi",
+    "ID": "Asia/Jakarta",
+    "BR": "America/Sao_Paulo",
+    "MX": "America/Mexico_City",
+    "CO": "America/Bogota",
+}
+
+def _country_code(country: str | None) -> str:
+    raw = str(country).strip().upper() if country is not None else ""
+    if raw in {"", "NONE", "NAN"}:
+        return ""
+    return raw if len(raw) == 2 else raw[:2]
+
+def _country_flag(country: str | None, fallback: str = "") -> str:
+    code = _country_code(country)
+    if code == "CO":
+        return "\U0001F1E8\U0001F1F4"
+    return fallback
+
+def _country_currency(country: str | None, fallback: str = "") -> str:
+    code = _country_code(country)
+    if code == "CO":
+        return "COP"
+    return fallback
+
+def _country_timezone(country: str | None) -> ZoneInfo:
+    raw = str(country).strip().upper() if country is not None else "TH"
+    if raw in {"", "NONE", "NAN"}:
+        raw = "TH"
+    if raw in COUNTRY_TIMEZONES:
+        code = raw
+    else:
+        two = raw[:2]
+        code = two if two in COUNTRY_TIMEZONES else "TH"
+    return ZoneInfo(COUNTRY_TIMEZONES.get(code, "Asia/Bangkok"))
+
+def _gmt_label(dt: datetime) -> str:
+    offset = dt.utcoffset() or timedelta(0)
+    total_minutes = int(offset.total_seconds() // 60)
+    sign = "+" if total_minutes >= 0 else "-"
+    total_minutes = abs(total_minutes)
+    hours, minutes = divmod(total_minutes, 60)
+    if minutes == 0:
+        return f"GMT{sign}{hours}"
+    return f"GMT{sign}{hours}:{minutes:02d}"
+
+def get_country_time_context(country: str | None):
+    now_local = datetime.now(_country_timezone(country))
+    current_time = now_local.strftime("%H:%M")
+    current_date = now_local.strftime("%Y-%m-%d")
+
     dates = [
         current_date,
-        (now_bkk - timedelta(days=1)).strftime("%Y-%m-%d"),
-        (now_bkk - timedelta(days=2)).strftime("%Y-%m-%d")
+        (now_local - timedelta(days=1)).strftime("%Y-%m-%d"),
+        (now_local - timedelta(days=2)).strftime("%Y-%m-%d"),
     ]
+    return current_time, dates, _gmt_label(now_local)
+
+def get_date_range_header(country: str | None = None):
+    """Backward-compatible helper returning only time + dates."""
+    current_time, dates, _ = get_country_time_context(country)
     return current_time, dates
     
 # ---------- Helpers ----------
@@ -129,12 +183,10 @@ def count_separators(s: str) -> int:
     print("MINUS, PLUS", s.count("+") + s.count("-"))
     return s.count("-") + s.count(",") + s.count("+") + s.count("-")
 
-current_time, _ = get_date_range_header()
-
 def render_apf_table_v2(country, rows, max_width=72, brand=False, widths=None, separators=None):
     # --- AFTER ---
     FLAGS = {"TH":"🇹🇭","PH":"🇵🇭","BD":"🇧🇩","PK":"🇵🇰","ID":"🇮🇩", "BR":"🇧🇷"}
-    flag = FLAGS.get(country, "")
+    flag = _country_flag(country, FLAGS.get(country, ""))
     
     # --- group by brand ---
     brand_groups = defaultdict(list)
@@ -195,14 +247,14 @@ def render_apf_table_v2(country, rows, max_width=72, brand=False, widths=None, s
     sep = "-".join(["-" * w0, "-" * w1, "-" * w2, "-" * w3, "-" * w4])
 
     # --- build output ---
-    current_time, date_range = get_date_range_header()
+    current_time, _, tz_label = get_country_time_context(country)
 
     if not brand:
 
         if list(brand_groups.keys())[0] == "TOTAL":
-            subtitle = escape_md_v2(f"{country} Acquisition Summary by Country \n(up to {current_time} GMT+7)")
+            subtitle = escape_md_v2(f"{country} Acquisition Summary by Country \n(up to {current_time} {tz_label})")
         else:
-            subtitle = escape_md_v2(f"{country} Acquisition Summary by Group \n(up to {current_time} GMT+7)")
+            subtitle = escape_md_v2(f"{country} Acquisition Summary by Group \n(up to {current_time} {tz_label})")
 
         title_line = subtitle
 
@@ -326,8 +378,8 @@ def render_group_then_brands(country: str, group_name: str, group_rows: list[dic
         sep_line = "—" * 10
         return "\n".join([group_block, sep_line, brands_block])
     
-    current_time, _ = get_date_range_header()
-    subtitle = escape_md_v2(f"{country} Acquisition Summary by Group \n(up to {current_time} GMT+7)")
+    current_time, _, tz_label = get_country_time_context(country)
+    subtitle = escape_md_v2(f"{country} Acquisition Summary by Group \n(up to {current_time} {tz_label})")
     brands_block = render_apf_table_v2(country, group_rows, max_width=max_width, brand=True, widths=common_widths, separators=common_separators)
     
     parts = [subtitle, brands_block]
@@ -456,8 +508,8 @@ CURRENCIES = {"PH":"PHP","TH":"THB","BD":"BDT","PK":"PKR","ID":"IDR", "BR":"BRL"
 def render_channel_distribution(country: str, rows: list[dict], topn: int = 5) -> str:
     FLAGS = {"TH":"🇹🇭","PH":"🇵🇭","BD":"🇧🇩","PK":"🇵🇰","ID":"🇮🇩"}
     CURRENCIES = {"PH":"PHP","TH":"THB","BD":"BDT","PK":"PKR","ID":"IDR"}
-    flag = FLAGS.get(country, "")
-    currency = CURRENCIES.get(country, "")
+    flag = _country_flag(country, FLAGS.get(country, ""))
+    currency = _country_currency(country, CURRENCIES.get(country, ""))
 
     def escape_md_v2(text: str) -> str:
         for ch in r"_*[]()~`>#+-=|{}.!":
@@ -606,6 +658,14 @@ def _fmt_pct_int(x, j=0):
     except Exception:
         return "+0"
 
+def _fmt_pct_int_2(x, j=0):
+    if x is None:
+        return "+0"
+    try:
+        return f"{_num_to_float(x)*100:+.2f}"
+    except Exception:
+        return "+0"
+
 def inline_code_line(s: str) -> str:
     return f"`{str(s).replace('`','ˋ')}`"
 
@@ -657,8 +717,8 @@ def render_dpf_table_v2(country, rows, max_width=72, brand=False, widths=None, s
 
     FLAGS = {"TH":"🇹🇭","PH":"🇵🇭","BD":"🇧🇩","PK":"🇵🇰","ID":"🇮🇩", "BR":"🇧🇷"}
     CURRENCIES = {"TH":"THB","PH":"PHP","BD":"BDT","PK":"PKR","ID":"IDR", "BR":"BRL"}
-    flag     = FLAGS.get(country, "")
-    currency = CURRENCIES.get(country, "")
+    flag     = _country_flag(country, FLAGS.get(country, ""))
+    currency = _country_currency(country, CURRENCIES.get(country, ""))
 
     import pandas as pd
     from collections import defaultdict
@@ -713,7 +773,7 @@ def render_dpf_table_v2(country, rows, max_width=72, brand=False, widths=None, s
             str(r["date"]).replace("/",""),
             _fmt_commas0(r["AverageDeposit"]) if r["AverageDeposit"] is not None else "-",
             _fmt_commas0(r["TotalDeposit"]),
-            _fmt_pct_int(r["Weightage"])
+            _fmt_pct_int_2(r["Weightage"])
         )
     
     # Use provided widths/separators or calculate them if not provided
@@ -770,13 +830,13 @@ def render_dpf_table_v2(country, rows, max_width=72, brand=False, widths=None, s
     header = fmt_header_row("Date", "Avg", "Total", "%")
     
     # --- build output (APF style) ---
-    current_time, _ = get_date_range_header()
+    current_time, _, tz_label = get_country_time_context(country)
     title    = stylize(f"*{escape_md_v2(f'COUNTRY: {country} {flag} ({currency})')}*", style="sans_bold")
     
     if list(brand_groups.keys())[0] == "TOTAL":
-        subtitle = "\n" + escape_md_v2(f"{country} Deposit Performance by Country \n(up to {current_time} GMT+7)")
+        subtitle = "\n" + escape_md_v2(f"{country} Deposit Performance by Country \n(up to {current_time} {tz_label})")
     else:
-        subtitle = "\n" + escape_md_v2(f"{country} Deposit Performance by Group \n(up to {current_time} GMT+7)")
+        subtitle = "\n" + escape_md_v2(f"{country} Deposit Performance by Group \n(up to {current_time} {tz_label})")
 
     parts = []
     
@@ -875,11 +935,11 @@ def _generate_dpf_summary_message(rows: list[dict]) -> str:
              f"{safe_sign}{safe_pct}% \\({safe_sign} {safe_abs} in absolute terms\\)\\.")
     
     # Italicize the Note
-    note_content = "Note: As of 12 February, the % calculation was updated to (Today - Yesterday) / Yesterday."
-    line2 = f"_{escape_md_v2(note_content)}_"
+    # note_content = "Note: As of 12 February, the % calculation was updated to (Today - Yesterday) / Yesterday."
+    # line2 = f"_{escape_md_v2(note_content)}_"
 
-    return f"{line1}\n{line2}"
-
+    # return f"{line1}\n{line2}"
+    return f"{line1}"
 # ------- aggregate by date (used for group summary / country total) -------
 def _aggregate_dpf_by_date(rows: list[dict], pseudo_brand: str):
     """Per-date totals across given rows; averages averaged; % vs Previous Day."""
@@ -944,7 +1004,7 @@ def render_dpf_group_then_brands(country: str, group_name: str, group_rows: list
         d = str(r.get("date", "")).replace("/", "")
         a = _fmt_commas0(r["AverageDeposit"]) if r["AverageDeposit"] is not None else "-"
         t = _fmt_commas0(r["TotalDeposit"])
-        w = _fmt_pct_int(r["Weightage"])
+        w = _fmt_pct_int_2(r["Weightage"])
         temp_rows.append((d, a, t, w))
 
     if not temp_rows:
@@ -987,8 +1047,8 @@ def render_dpf_group_then_brands(country: str, group_name: str, group_rows: list
         sep_line = "—" * 10
         return "\n".join([group_block, sep_line, brands_block])
     
-    current_time, _ = get_date_range_header()
-    subtitle = escape_md_v2(f"{country} Deposit Summary by Group \n(up to {current_time} GMT+7)")
+    current_time, _, tz_label = get_country_time_context(country)
+    subtitle = escape_md_v2(f"{country} Deposit Summary by Group \n(up to {current_time} {tz_label})")
     parts = [subtitle, brands_block]
 
     return "\n".join(parts)
@@ -1704,25 +1764,20 @@ async def send_pmh_total(update: Update, df: pd.DataFrame, target_date):
         await update.effective_chat.send_message("`No data.`", parse_mode=ParseMode.MARKDOWN_V2)
         return
 
-    # --- NEW: Get current date/time in GMT+7 ---
-    gmt_plus_7 = timezone(timedelta(hours=7))
-    now_gmt7 = datetime.now(gmt_plus_7)
-    today_gmt7_str = now_gmt7.date().isoformat() # Format: 'YYYY-MM-DD'
-    current_time_str = now_gmt7.strftime('%H:%M')
-    
-    # Check if the target_date is today
-    # We use str() to handle both string and date objects
-    is_today = str(target_date) == today_gmt7_str
-    # --- END NEW ---
-
     for country, cdf in df.groupby("country"):
+        now_local = datetime.now(_country_timezone(country))
+        today_local_str = now_local.date().isoformat()
+        current_time_str = now_local.strftime('%H:%M')
+        tz_label = _gmt_label(now_local)
+        is_today = str(target_date) == today_local_str
+
         # 1) --- Data Processing ---
         country_title_2 = escape_md_v2(f"{country} Group Comparison ({target_date})")
 
         # --- NEW: Conditionally build header ---
         subtitle = ""
         if is_today:
-            subtitle = escape_md_v2(f"(up to {current_time_str} GMT+7)")
+            subtitle = escape_md_v2(f"(up to {current_time_str} {tz_label})")
         
         header = f"{country_title_2}\n"
         if subtitle:
@@ -1934,15 +1989,15 @@ async def send_pmh_week(update: Update, df: pd.DataFrame, as_of_date: str):
         await update.effective_chat.send_message("`No weekly data.`", parse_mode=ParseMode.MARKDOWN_V2)
         return
 
-    g7 = timezone(timedelta(hours=7))
-    now_g7 = datetime.now(g7)
-    now_time = now_g7.strftime("%H:%M")
-
     as_of_dt = datetime.strptime(str(as_of_date), "%Y-%m-%d").date()
     week_start = (as_of_dt - timedelta(days=(as_of_dt.weekday())))
-    is_today = (as_of_dt == now_g7.date())
 
     for country, cdf in df.groupby("country"):
+        now_local = datetime.now(_country_timezone(country))
+        now_time = now_local.strftime("%H:%M")
+        is_today = (as_of_dt == now_local.date())
+        tz_label = _gmt_label(now_local)
+
         cur_df = cdf[cdf["period"] == "CUR"].copy()
         prv_df = cdf[cdf["period"] == "PREV"].copy()
 
@@ -2009,7 +2064,7 @@ async def send_pmh_week(update: Update, df: pd.DataFrame, as_of_date: str):
 
         hdr_title = escape_md_v2(f"{country} Report - {week_label}")
         if is_today:
-            hdr_range = escape_md_v2(f"(from {week_start.isoformat()} to today {now_time} GMT+7)")
+            hdr_range = escape_md_v2(f"(from {week_start.isoformat()} to today {now_time} {tz_label})")
         else:
             hdr_range = escape_md_v2(f"(from {week_start.isoformat()} to {as_of_dt.isoformat()})")
 

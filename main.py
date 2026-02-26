@@ -811,8 +811,8 @@ class RealTimeBot:
             parts.append("") # blank line
 
         # Common footer
-        parts.append("*📍 Supported Countries:* TH, PH, BD, PK, BR, MX")
-        parts.append("*🕒 Timezone:* GMT+7\n")
+        parts.append("*📍 Supported Countries:* TH, PH, BD, PK, BR, MX, CO")
+        parts.append("*🕒 Timezone:* Per-country local time (TH GMT+7, PH GMT+8, BD GMT+6, PK GMT+5, BR GMT-3, MX GMT-6, CO GMT-5)\n")
         parts.append("_Please reduce your font size if the table appears misaligned_")
 
         text = "\n".join(parts)
@@ -832,7 +832,7 @@ class RealTimeBot:
         try:
             if not context.args:
                 return await update.effective_chat.send_message(
-                    "Please type the correct function: `/apf a` or `/apf <COUNTRY>` (TH, PH, BD, PK)",
+                    "Please type the correct function: `/apf a` or `/apf <COUNTRY>` (TH, PH, BD, PK, BR, MX, CO)",
                     parse_mode=ParseMode.MARKDOWN,
                 )
 
@@ -868,7 +868,7 @@ class RealTimeBot:
             current_time, date_range = get_date_range_header()
             header_text = (
                 f"📊 *Acquisition Summary* \n"
-                f"⏰ Data up to {current_time} (GMT+7) for each day \n"
+                f"⏰ Data up to {current_time} (local time) for each day \n"
                 f"📅 Date range: {date_range[2]} → {date_range[0]}"
             )
             # await update.effective_chat.send_message(header_text, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
@@ -943,7 +943,7 @@ class RealTimeBot:
     async def pmh_week_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
         /pmh_week <COUNTRY/A> <YYYYMMDD>
-        Aggregates Mon -> as-of day (GMT+7). Also shows +/- % vs last week same span.
+        Aggregates Mon -> as-of day (country local time). Also shows +/- % vs last week same span.
         """
         if not await self._ensure_allowed(update, "pmh_total"):  # reuse same permission bucket
             return
@@ -1100,7 +1100,7 @@ class RealTimeBot:
         try:
             if not context.args:
                 return await update.effective_chat.send_message(
-                    "Usage: `/dpf a` or `/dpf <COUNTRY>` (TH, PH, BD, PK, BR, MX)",
+                    "Usage: `/dpf a` or `/dpf <COUNTRY>` (TH, PH, BD, PK, BR, MX, CO)",
                     parse_mode=ParseMode.MARKDOWN,
                 )
 
@@ -1135,7 +1135,7 @@ class RealTimeBot:
             current_time, date_range = get_date_range_header()
             header_text = (
                 f"💸 *Deposit Performance* \n"
-                f"⏰ Data up to {current_time} (GMT+7) for each day \n"
+                f"⏰ Data up to {current_time} (local time) for each day \n"
                 f"📅 Date range: {date_range[2]} → {date_range[0]}\n"
                 "`%` ~ Percent vs. latest day’s total"
             )
