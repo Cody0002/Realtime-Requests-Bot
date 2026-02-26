@@ -2,34 +2,45 @@
 -- DECLARE target_country STRING DEFAULT NULL;
 -- e.g. SET target_country = 'TH';  -- or leave NULL for all
 
--- 3-day sliding window: today, -1d, -2d, each capped at "now" in Asia/Bangkok
-WITH params AS (
+-- 3-day sliding window: today, -1d, -2d; each day capped at each country's local "now"
+WITH country_clock AS (
+  SELECT 'TH' AS country, '+07:00' AS tz_offset UNION ALL
+  SELECT 'PH' AS country, '+08:00' AS tz_offset UNION ALL
+  SELECT 'BD' AS country, '+06:00' AS tz_offset UNION ALL
+  SELECT 'PK' AS country, '+05:00' AS tz_offset UNION ALL
+  SELECT 'BR' AS country, '-03:00' AS tz_offset UNION ALL
+  SELECT 'CO' AS country, '-05:00' AS tz_offset UNION ALL
+  SELECT 'MX' AS country, '-06:00' AS tz_offset
+),
+country_now AS (
   SELECT
-    'Asia/Bangkok' AS tz,
-    CURRENT_DATE('Asia/Bangkok') AS today_date,
-    CURRENT_TIME('Asia/Bangkok') AS now_time
+    country,
+    tz_offset,
+    DATE(DATETIME(CURRENT_TIMESTAMP(), tz_offset)) AS today_date,
+    TIME(DATETIME(CURRENT_TIMESTAMP(), tz_offset)) AS now_time
+  FROM country_clock
 ),
 windows AS (
   SELECT
+    n.country,
     d AS day_offset,
-    DATE_SUB(p.today_date, INTERVAL d DAY) AS date,
-    TIMESTAMP(DATETIME(DATE_SUB(p.today_date, INTERVAL d DAY), TIME '00:00:00'), p.tz) AS start_ts,
-    TIMESTAMP(DATETIME(DATE_SUB(p.today_date, INTERVAL d DAY), p.now_time), p.tz) AS end_ts
-  FROM params p, UNNEST(GENERATE_ARRAY(0,2)) AS d
+    DATE_SUB(n.today_date, INTERVAL d DAY) AS date,
+    TIMESTAMP(DATETIME(DATE_SUB(n.today_date, INTERVAL d DAY), TIME '00:00:00'), n.tz_offset) AS start_ts,
+    TIMESTAMP(DATETIME(DATE_SUB(n.today_date, INTERVAL d DAY), n.now_time), n.tz_offset) AS end_ts
+  FROM country_now n, UNNEST(GENERATE_ARRAY(0, 2)) AS d
+  WHERE @target_country IS NULL OR n.country = @target_country
 ),
 map_country AS (
   SELECT DISTINCT
     UPPER(a.name) AS brand,
-    LEFT(f.reqCurrency, 2) AS country
+    n.country
   FROM `kz-dp-prod.kz_pg_to_bq_realtime.ext_funding_tx` f
-  LEFT JOIN `kz-dp-prod.kz_pg_to_bq_realtime.account` a ON f.accountId = a.id
-  -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
-  -- OPTIMIZATION 1: Filter countries early here. --
-  WHERE @target_country IS NULL OR
-    LEFT(f.reqCurrency, 2) = @target_country
-  -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+  LEFT JOIN `kz-dp-prod.kz_pg_to_bq_realtime.account` a
+    ON f.accountId = a.id
+  JOIN country_now n
+    ON n.country = LEFT(f.reqCurrency, 2)
+  WHERE @target_country IS NULL OR n.country = @target_country
 ),
--- Registrations (NAR) within each day's partial window up to "now"
 view_total AS (
   SELECT
     w.date,
@@ -43,45 +54,44 @@ view_total AS (
   FROM `kz-dp-prod.kz_pg_to_bq_realtime.ext_member` AS m
   JOIN `kz-dp-prod.kz_pg_to_bq_realtime.account` AS a
     ON m.accountId = a.id
-  LEFT JOIN map_country AS mc
+  JOIN map_country AS mc
     ON mc.brand = UPPER(a.name)
-  CROSS JOIN windows w
+  JOIN windows w
+    ON w.country = mc.country
   WHERE m.registerAt >= w.start_ts
     AND m.registerAt <  w.end_ts
 ),
--- All deposits (for global ranking per user), then filter by each window later
 total_deposit AS (
   SELECT
     CONCAT(a.gamePrefix, m.apiIdentifier) AS username,
     f.memberId,
     f.completedAt,
-    UPPER(a.name)   AS brand,
+    UPPER(a.name) AS brand,
     UPPER(a.`group`) AS `group`,
     f.id,
-    LEFT(f.reqCurrency, 2) AS country,
+    n.country,
     f.createdAt
   FROM `kz-dp-prod.kz_pg_to_bq_realtime.ext_funding_tx` f
-  LEFT JOIN `kz-dp-prod.kz_pg_to_bq_realtime.ext_member` m ON f.memberId = m.id
-  LEFT JOIN `kz-dp-prod.kz_pg_to_bq_realtime.account` a ON f.accountId = a.id
+  LEFT JOIN `kz-dp-prod.kz_pg_to_bq_realtime.ext_member` m
+    ON f.memberId = m.id
+  LEFT JOIN `kz-dp-prod.kz_pg_to_bq_realtime.account` a
+    ON f.accountId = a.id
+  JOIN country_now n
+    ON n.country = LEFT(f.reqCurrency, 2)
   WHERE f.type = 'deposit'
     AND f.status = 'completed'
-    -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
-    -- OPTIMIZATION 2: Filter the main deposit table early to speed up the RANK() function. --
-    AND (
-      @target_country IS NULL OR
-      LEFT(f.reqCurrency, 2) = @target_country
-    )
-    -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+    -- Range wide enough to cover supported local timezones (+8 to -6).
+    AND f.insertedAt >= TIMESTAMP_SUB(TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)), INTERVAL 8 HOUR)
+    AND f.insertedAt <  TIMESTAMP_ADD(TIMESTAMP(DATE_ADD(CURRENT_DATE(), INTERVAL 1 DAY)), INTERVAL 6 HOUR)
+    AND (@target_country IS NULL OR n.country = @target_country)
   QUALIFY ROW_NUMBER() OVER (PARTITION BY f.id ORDER BY f.updatedAt DESC) = 1
 ),
--- Rank deposits per user across all time (so FTD/STD/TTD are true 1st/2nd/3rd overall)
 ranked_deposit AS (
   SELECT
     td.*,
     RANK() OVER (PARTITION BY username ORDER BY createdAt ASC) AS rank_deposit
   FROM total_deposit td
 ),
--- For each day-window, keep deposits with completedAt inside that day's partial window
 windowed_deposit AS (
   SELECT
     w.date,
@@ -91,7 +101,8 @@ windowed_deposit AS (
     rd.rank_deposit
   FROM ranked_deposit rd
   JOIN windows w
-    ON rd.completedAt >= w.start_ts
+    ON rd.country = w.country
+   AND rd.completedAt >= w.start_ts
    AND rd.completedAt <  w.end_ts
 ),
 consolidated_deposit AS (
@@ -140,8 +151,4 @@ LEFT JOIN consolidated_deposit cd
  AND cn.country = cd.country
 JOIN brand_total bt
   ON cn.brand = bt.brand
--- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
--- OPTIMIZATION 3: This filter is no longer needed here. --
--- WHERE @target_country IS NULL OR cn.country = @target_country
--- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
 ORDER BY bt.total_nar DESC, cn.date DESC;

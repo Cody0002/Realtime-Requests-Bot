@@ -5,24 +5,31 @@ WITH deposit_raw AS (
     f.status,
     f.method,
     CAST(f.netAmount AS FLOAT64) AS net_amount,
-    f.reqCurrency
+    f.reqCurrency,
+    LEFT(f.reqCurrency, 2) AS country
   FROM
     `kz-dp-prod.kz_pg_to_bq_realtime.ext_funding_tx` AS f
   WHERE
     f.type = 'deposit'
     AND f.status = 'completed'
-    -------------------------------------------------------
-    -- ✅ OPTIMIZED FILTER: Enables Partition Pruning
-    -------------------------------------------------------
-    AND f.insertedAt >= TIMESTAMP(DATETIME(@target_date, TIME '00:00:00'), 'Asia/Bangkok')
-    AND f.insertedAt <  TIMESTAMP(DATETIME(DATE_ADD(@target_date, INTERVAL 1 DAY), TIME '00:00:00'), 'Asia/Bangkok')
-    -------------------------------------------------------
-  -- DEDUPLICATION
+    -- Range: [target - 8h] (start of UTC+8) to [target + 1d + 6h] (end of UTC-6)
+    AND f.insertedAt >= TIMESTAMP_SUB(TIMESTAMP(@target_date), INTERVAL 8 HOUR)
+    AND f.insertedAt <  TIMESTAMP_ADD(TIMESTAMP_ADD(TIMESTAMP(@target_date), INTERVAL 1 DAY), INTERVAL 6 HOUR)
+    AND (@selected_country IS NULL OR LEFT(f.reqCurrency, 2) = @selected_country)
+    AND DATE(DATETIME(f.insertedAt, CASE
+      WHEN f.reqCurrency = 'BDT' THEN '+06:00' -- UTC+6
+      WHEN f.reqCurrency = 'PKR' THEN '+05:00' -- UTC+5
+      WHEN f.reqCurrency = 'PHP' THEN '+08:00' -- UTC+8
+      WHEN f.reqCurrency = 'THB' THEN '+07:00' -- UTC+7
+      WHEN f.reqCurrency = 'BRL' THEN '-03:00' -- UTC-3
+      WHEN f.reqCurrency = 'COP' THEN '-05:00' -- UTC-5
+      WHEN LEFT(f.reqCurrency, 2) = 'MX' THEN '-06:00' -- UTC-6
+      ELSE NULL END)) = @target_date
   QUALIFY ROW_NUMBER() OVER (PARTITION BY f.id ORDER BY f.updatedAt DESC) = 1
 ),
 normalized AS (
   SELECT
-    LEFT(reqCurrency, 2) AS country,
+    country,
     COALESCE(method, 'UNKNOWN') AS method,
     reqCurrency AS currency,
     net_amount
@@ -41,8 +48,6 @@ grouped AS (
     AVG(net_amount) AS avg_native
   FROM
     normalized
-  WHERE
-    (@selected_country IS NULL OR country = @selected_country)
   GROUP BY
     country,
     method,

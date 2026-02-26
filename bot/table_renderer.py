@@ -965,7 +965,7 @@ def _generate_dpf_summary_message(rows: list[dict]) -> str:
     safe_pct = escape_md_v2(f"{growth_pct:.0f}")
 
     line1 = (f"Between {safe_prev_date} and {safe_latest_date}, the total changed by "
-             f"{safe_sign}{safe_pct}% \\({safe_sign} {safe_abs} in absolute terms\\)\\.")
+             f"{safe_sign}{safe_pct}% \\({safe_sign} {safe_abs}\\)\\.")
     
     # Italicize the Note
     # note_content = "Note: As of 12 February, the % calculation was updated to (Today - Yesterday) / Yesterday."
