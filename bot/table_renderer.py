@@ -334,6 +334,39 @@ def _aggregate_dpf_by_date(rows: list[dict], pseudo_brand: str):
 
     return collapsed
 
+def _aggregate_by_date_for_group(rows: list[dict], brand_label: str):
+    """
+    Collapse rows for one group into per-date totals for APF rendering.
+    """
+    def _to_int(v):
+        try:
+            return int(v)
+        except Exception:
+            try:
+                return int(float(str(v).replace(",", "")))
+            except Exception:
+                return 0
+
+    by_date = {}
+    for r in rows:
+        d = r.get("date")
+        if d not in by_date:
+            by_date[d] = {
+                "date": d,
+                "brand": brand_label,
+                "country": r.get("country"),
+                "NAR": 0,
+                "FTD": 0,
+                "STD": 0,
+                "TTD": 0,
+            }
+        by_date[d]["NAR"] += _to_int(r.get("NAR", 0))
+        by_date[d]["FTD"] += _to_int(r.get("FTD", 0))
+        by_date[d]["STD"] += _to_int(r.get("STD", 0))
+        by_date[d]["TTD"] += _to_int(r.get("TTD", 0))
+
+    return sorted(by_date.values(), key=lambda x: str(x["date"]), reverse=True)
+
 def render_group_then_brands(country: str, group_name: str, group_rows: list[dict], max_width=72) -> str:
     """
     Layout only:
