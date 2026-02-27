@@ -93,10 +93,13 @@ def get_country_time_context(country: str | None):
     current_time = now_local.strftime("%H:%M")
     current_date = now_local.strftime("%Y-%m-%d")
 
+    # Expanded to 5 days so the backend caller passes enough data for growth calculation
     dates = [
         current_date,
         (now_local - timedelta(days=1)).strftime("%Y-%m-%d"),
         (now_local - timedelta(days=2)).strftime("%Y-%m-%d"),
+        (now_local - timedelta(days=3)).strftime("%Y-%m-%d"),
+        (now_local - timedelta(days=4)).strftime("%Y-%m-%d"),
     ]
     return current_time, dates, _gmt_label(now_local)
 
@@ -180,7 +183,7 @@ def inline_code_line(s: str) -> str:
 
 def count_separators(s: str) -> int:
     s = str(s)
-    print("MINUS, PLUS", s.count("+") + s.count("-"))
+    # print("MINUS, PLUS", s.count("+") + s.count("-"))
     return s.count("-") + s.count(",") + s.count("+") + s.count("-")
 
 def render_apf_table_v2(country, rows, max_width=72, brand=False, widths=None, separators=None):
@@ -280,7 +283,7 @@ def render_apf_table_v2(country, rows, max_width=72, brand=False, widths=None, s
         print(country, brand)
 
         parts.append(stylize(f"*{escape_md_v2(str(brand_name))}*", style="sans_bold"))
-        for r in items:
+        for r in sorted(items, key=lambda x: str(x.get("date", "")), reverse=True)[:3]:
             parts.append(
                 wrap_separators(
                     inline_code_line(
@@ -327,10 +330,10 @@ def _aggregate_dpf_by_date(rows: list[dict], pseudo_brand: str):
             curr_total = collapsed[i]["TotalDeposit"]
             prev_total = collapsed[i+1]["TotalDeposit"]
             # (Today - Yesterday) / Yesterday
-            collapsed[i]["Weightage"] = (curr_total - prev_total) / prev_total if prev_total != 0 else 0.0
+            collapsed[i]["Weightage"] = (curr_total - prev_total) / prev_total if prev_total != 0 else None
         else:
             # Oldest date has no comparison
-            collapsed[i]["Weightage"] = 0.0
+            collapsed[i]["Weightage"] = None
 
     return collapsed
 
@@ -693,11 +696,11 @@ def _fmt_pct_int(x, j=0):
 
 def _fmt_pct_int_2(x, j=0):
     if x is None:
-        return "+0"
+        return "-"
     try:
         return f"{_num_to_float(x)*100:+.2f}"
     except Exception:
-        return "+0"
+        return "-"
 
 def inline_code_line(s: str) -> str:
     return f"`{str(s).replace('`','ˋ')}`"
@@ -790,9 +793,9 @@ def render_dpf_table_v2(country, rows, max_width=72, brand=False, widths=None, s
             if i + 1 < len(collapsed):
                 curr_total = collapsed[i]["TotalDeposit"]
                 prev_total = collapsed[i+1]["TotalDeposit"]
-                collapsed[i]["Weightage"] = (curr_total - prev_total) / prev_total if prev_total != 0 else 0.0
+                collapsed[i]["Weightage"] = (curr_total - prev_total) / prev_total if prev_total != 0 else None
             else:
-                collapsed[i]["Weightage"] = 0.0
+                collapsed[i]["Weightage"] = None
 
         # 👇 FILTERING LOGIC: Keep only top 3 days for this brand
         if len(collapsed) > 3:
@@ -946,6 +949,7 @@ def _generate_dpf_summary_message(rows: list[dict]) -> str:
     val_prev = float(prev["TotalDeposit"] or 0)
 
     diff_abs = val_latest - val_prev
+    print(diff_abs, val_latest, val_prev)
     
     # Growth % = (Current - Prev) / Prev
     if val_prev != 0:
@@ -997,13 +1001,9 @@ def _aggregate_dpf_by_date(rows: list[dict], pseudo_brand: str):
         if i + 1 < len(collapsed):
             curr_total = collapsed[i]["TotalDeposit"]
             prev_total = collapsed[i+1]["TotalDeposit"]
-            collapsed[i]["Weightage"] = (curr_total - prev_total) / prev_total if prev_total != 0 else 0.0
+            collapsed[i]["Weightage"] = (curr_total - prev_total) / prev_total if prev_total != 0 else None
         else:
-            collapsed[i]["Weightage"] = 0.0
-
-    # 👇 FILTERING LOGIC: Keep only top 3 days
-    if len(collapsed) > 3:
-        collapsed = collapsed[:3]
+            collapsed[i]["Weightage"] = None
 
     return collapsed
 
@@ -1099,18 +1099,6 @@ async def send_dpf_tables(update: Update, country_groups: dict[str, list[dict]],
     #     return text
 
     for country, rows in sorted(country_groups.items()):
-        # --- NEW: Send Summary Message First ---
-        try:
-            summary_msg = _generate_dpf_summary_message(rows)
-            if summary_msg:
-                await update.effective_chat.send_message(
-                    summary_msg,
-                    parse_mode=ParseMode.MARKDOWN_V2,
-                    disable_web_page_preview=True
-                )
-                await asyncio.sleep(0.5) # Short pause to ensure order
-        except Exception as e:
-            print(f"Error sending summary for {country}: {e}")
         # --- END NEW ---
         
         # split by group
@@ -1142,7 +1130,19 @@ async def send_dpf_tables(update: Update, country_groups: dict[str, list[dict]],
             disable_web_page_preview=True
             )
             await asyncio.sleep(1)
-
+            
+        # --- NEW: Send Summary Message First ---
+        try:
+            summary_msg = _generate_dpf_summary_message(rows)
+            if summary_msg:
+                await update.effective_chat.send_message(
+                    summary_msg,
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    disable_web_page_preview=True
+                )
+                await asyncio.sleep(0.5) # Short pause to ensure order
+        except Exception as e:
+            print(f"Error sending summary for {country}: {e}")
 # -----------------------------------------------------------
 import pandas as pd
 # /pmh provider TH 20251006
