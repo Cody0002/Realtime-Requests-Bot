@@ -697,8 +697,18 @@ class RealTimeBot:
         if text is None:
             return
 
+        reg_user = self.registered_users.get(int(user.id), {}) if user else {}
+        first_name = (getattr(user, "first_name", None) if user else None) or reg_user.get("first_name")
+        last_name = (getattr(user, "last_name", None) if user else None) or reg_user.get("last_name")
+        username = (getattr(user, "username", None) if user else None) or reg_user.get("username")
+        full_name = " ".join(part for part in [first_name, last_name] if part).strip()
+        name = full_name or (f"@{username}" if username else None)
+
         payload = {
             "user_id": user.id if user else None,
+            "first_name": first_name,
+            "last_name": last_name,
+            "Name": name,
             "chat_id": chat.id if chat else None,
             "chat_type": chat.type if chat else None,
             "text": text,
