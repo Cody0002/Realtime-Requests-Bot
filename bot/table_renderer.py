@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 import asyncio
 import numpy as np
 import time
+import os
 
 # ---- unicode "font" converter ----
 STYLES = {
@@ -1093,6 +1094,11 @@ def render_dpf_country_total(country: str, rows: list[dict], max_width=72) -> st
 
 # ------- sender (sort groups by TotalDeposit desc) -------
 async def send_dpf_tables(update: Update, country_groups: dict[str, list[dict]], max_width: int = 72):
+    try:
+        send_delay = max(0.0, float(os.getenv("DPF_MESSAGE_DELAY_SECONDS", "0.25").strip()))
+    except ValueError:
+        send_delay = 0.25
+
     # def escape_md_v2(text: str) -> str:
     #     for ch in r"=-,+":
     #         text = text.replace(ch, "\\"+ch)
@@ -1119,7 +1125,8 @@ async def send_dpf_tables(update: Update, country_groups: dict[str, list[dict]],
                 parse_mode=ParseMode.MARKDOWN_V2,
                 disable_web_page_preview=True
                 )
-                await asyncio.sleep(1)
+                if send_delay > 0:
+                    await asyncio.sleep(send_delay)
 
         # final country GRAND TOTAL by date
         total_msg = render_dpf_country_total(country, rows, max_width=max_width)
@@ -1129,7 +1136,8 @@ async def send_dpf_tables(update: Update, country_groups: dict[str, list[dict]],
             parse_mode=ParseMode.MARKDOWN_V2, 
             disable_web_page_preview=True
             )
-            await asyncio.sleep(1)
+            if send_delay > 0:
+                await asyncio.sleep(send_delay)
             
         # --- NEW: Send Summary Message First ---
         try:
@@ -1140,7 +1148,8 @@ async def send_dpf_tables(update: Update, country_groups: dict[str, list[dict]],
                     parse_mode=ParseMode.MARKDOWN_V2,
                     disable_web_page_preview=True
                 )
-                await asyncio.sleep(0.5) # Short pause to ensure order
+                if send_delay > 0:
+                    await asyncio.sleep(send_delay)
         except Exception as e:
             print(f"Error sending summary for {country}: {e}")
 # -----------------------------------------------------------

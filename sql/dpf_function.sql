@@ -1,4 +1,4 @@
--- 5-day sliding window: today, -1d, -2d, -3d, -4d; each day capped at each country's local "now"
+-- 3-day sliding window: today, -1d, -2d; each day capped at each country's local "now"
 WITH country_clock AS (
   SELECT 'TH' AS country, '+07:00' AS tz_offset UNION ALL
   SELECT 'PH' AS country, '+08:00' AS tz_offset UNION ALL
@@ -35,9 +35,10 @@ base AS (
     ON cn.country = LEFT(f.reqCurrency, 2)
   WHERE f.type = 'deposit'
     AND f.status = 'completed'
-    -- Range wide enough to cover supported local timezones (+8 to -6).
-    AND f.insertedAt >= TIMESTAMP_SUB(TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 6 DAY)), INTERVAL 8 HOUR)
+    -- Range wide enough to cover supported local timezones (+8 to -6) for the 3-day window.
+    AND f.insertedAt >= TIMESTAMP_SUB(TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY)), INTERVAL 8 HOUR)
     AND f.insertedAt <  TIMESTAMP_ADD(TIMESTAMP(DATE_ADD(CURRENT_DATE(), INTERVAL 1 DAY)), INTERVAL 6 HOUR)
+    AND (@target_country IS NULL OR LEFT(f.reqCurrency, 2) = @target_country)
     AND (@target_country IS NULL OR cn.country = @target_country)
   QUALIFY ROW_NUMBER() OVER (PARTITION BY f.id ORDER BY f.updatedAt DESC) = 1
 ),
@@ -49,7 +50,7 @@ capped AS (
     `group`,
     netAmount
   FROM base
-  WHERE local_date BETWEEN DATE_SUB(today_date, INTERVAL 4 DAY) AND today_date
+  WHERE local_date BETWEEN DATE_SUB(today_date, INTERVAL 2 DAY) AND today_date
     AND local_time < now_time
     AND netAmount IS NOT NULL
 ),

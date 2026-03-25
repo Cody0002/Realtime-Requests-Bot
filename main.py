@@ -1142,6 +1142,8 @@ class RealTimeBot:
             )
 
     async def dpf_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        t0 = time.perf_counter()
+
         def normalize_brand(b):
             KEEP_BRANDS = {"96G", "BLG", "WDB"}
             s = "" if b is None else str(b).strip()
@@ -1180,7 +1182,9 @@ class RealTimeBot:
                 selected_country = sel
                 scope_label = sel
 
+            q0 = time.perf_counter()
             rows = await self.bq_client.execute_dpf_query(selected_country)
+            q_elapsed = time.perf_counter() - q0
             if not rows:
                 return await update.effective_chat.send_message(f"No deposit data for {scope_label}.")
 
@@ -1204,7 +1208,18 @@ class RealTimeBot:
             )
             # await update.effective_chat.send_message(header_text, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
 
+            s0 = time.perf_counter()
             await send_dpf_tables(update, country_groups, max_width=52)
+            send_elapsed = time.perf_counter() - s0
+            total_elapsed = time.perf_counter() - t0
+            logger.info(
+                "/dpf timing country=%s query=%.2fs send=%.2fs total=%.2fs rows=%s",
+                selected_country or "ALL",
+                q_elapsed,
+                send_elapsed,
+                total_elapsed,
+                len(rows),
+            )
 
         except Exception as e:
             logger.exception("Error in /dpf")
