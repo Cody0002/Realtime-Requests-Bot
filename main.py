@@ -102,6 +102,16 @@ class RealTimeBot:
 
         self.logs_dir = base_dir / "logs"
         self.logs_dir.mkdir(exist_ok=True)
+        raw_retention_days = os.getenv("EVENT_LOG_RETENTION_DAYS", "30").strip()
+        try:
+            self.log_retention_days = max(1, int(raw_retention_days))
+        except ValueError:
+            self.log_retention_days = 30
+            logger.warning(
+                "Invalid EVENT_LOG_RETENTION_DAYS=%r. Falling back to 30.",
+                raw_retention_days,
+            )
+        self._last_log_cleanup_day = None
 
         self.registered_file = self.logs_dir / "registered_users.json"
         self.registered_users = self._load_registered_users()
@@ -121,6 +131,48 @@ class RealTimeBot:
 
         logger.info("registered_file path: %s", self.registered_file.resolve())
         logger.info("invite_tokens path:   %s", self.tokens_file.resolve())
+        self._run_log_retention_if_needed(force=True)
+
+    def _cleanup_old_event_logs(self):
+        """
+        Remove event logs older than retention window.
+        Only deletes files matching: events-YYYYMMDD.jsonl
+        """
+        try:
+            cutoff_date = (
+                datetime.now(ZoneInfo("Asia/Bangkok")).date()
+                - timedelta(days=self.log_retention_days - 1)
+            )
+            removed = 0
+            kept = 0
+            for path in self.logs_dir.glob("events-*.jsonl"):
+                day_str = path.stem.replace("events-", "", 1)
+                try:
+                    file_date = datetime.strptime(day_str, "%Y%m%d").date()
+                except ValueError:
+                    logger.warning("Skipping unexpected log filename: %s", path.name)
+                    continue
+
+                if file_date < cutoff_date:
+                    path.unlink()
+                    removed += 1
+                else:
+                    kept += 1
+
+            logger.info(
+                "Log retention cleanup done (keep=%s days): removed=%s, kept=%s",
+                self.log_retention_days,
+                removed,
+                kept,
+            )
+        except Exception:
+            logger.exception("Failed to clean up old event logs")
+
+    def _run_log_retention_if_needed(self, force: bool = False):
+        today = datetime.now(ZoneInfo("Asia/Bangkok")).date()
+        if force or self._last_log_cleanup_day != today:
+            self._cleanup_old_event_logs()
+            self._last_log_cleanup_day = today
 
     def _visible_commands_for_chat(self, update: Update) -> list[str]:
         """
@@ -664,6 +716,7 @@ class RealTimeBot:
     def _log_event(self, payload: dict):
         try:
             now_bkk = datetime.now(ZoneInfo("Asia/Bangkok"))
+            self._run_log_retention_if_needed()
             day = now_bkk.strftime("%Y%m%d")
             log_path = self.logs_dir / f"events-{day}.jsonl"
 
