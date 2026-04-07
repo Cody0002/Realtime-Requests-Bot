@@ -6,8 +6,10 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import asyncio
 import numpy as np
-import time
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 # ---- unicode "font" converter ----
 STYLES = {
@@ -238,7 +240,6 @@ def render_apf_table_v2(country, rows, max_width=72, brand=False, widths=None, s
         _f = count_separators(f)
         _s = count_separators(s)
         _t = count_separators(t)
-        print(d, n, f, s, t)
         return "  ".join([
             replace_spacing(d.ljust(w0), x0, _d),
             replace_spacing(n.rjust(w1), x1, _n),
@@ -281,8 +282,6 @@ def render_apf_table_v2(country, rows, max_width=72, brand=False, widths=None, s
         if not first:
             parts.append("")  # blank line between brands
         first = False
-        print(country, brand)
-
         parts.append(stylize(f"*{escape_md_v2(str(brand_name))}*", style="sans_bold"))
         for r in sorted(items, key=lambda x: str(x.get("date", "")), reverse=True)[:3]:
             parts.append(
@@ -299,7 +298,6 @@ def render_apf_table_v2(country, rows, max_width=72, brand=False, widths=None, s
                 )
             )
 
-    print(parts)
     return "\n".join(parts)
 
 # ------- TESTING APF TABLE with GROUP and BRAND -------
@@ -542,7 +540,7 @@ def _to_percent_number(val) -> float:
 FLAGS = {"TH":"🇹🇭","PH":"🇵🇭","BD":"🇧🇩","PK":"🇵🇰","ID":"🇮🇩", "BR":"🇧🇷"}
 CURRENCIES = {"PH":"PHP","TH":"THB","BD":"BDT","PK":"PKR","ID":"IDR", "BR":"BRL"}
 
-def render_channel_distribution(country: str, rows: list[dict], topn: int = 5) -> str:
+def render_channel_distribution(country: str, rows: list[dict], topn: int = 5, pgw: str | None = None) -> str:
     FLAGS = {"TH":"🇹🇭","PH":"🇵🇭","BD":"🇧🇩","PK":"🇵🇰","ID":"🇮🇩"}
     CURRENCIES = {"PH":"PHP","TH":"THB","BD":"BDT","PK":"PKR","ID":"IDR"}
     flag = _country_flag(country, FLAGS.get(country, ""))
@@ -555,7 +553,8 @@ def render_channel_distribution(country: str, rows: list[dict], topn: int = 5) -
 
     raw_title = f"COUNTRY: {country} {flag} - ({currency})"
     # title = stylize(f"*{escape_md_v2(raw_title)}*", style="sans_bold")
-    title = f"{country} Total Summary"
+    pgw_prefix = f"{str(pgw).upper()} " if pgw else ""
+    title = f"{country} {pgw_prefix}Deposit Channel Distribution".strip()
 
     # --- Prepare strings ---
     channels = [str(r.get("method",""))
@@ -638,9 +637,14 @@ def render_channel_distribution(country: str, rows: list[dict], topn: int = 5) -
     return "\n".join([title,*codeA, "", inline_code(escape_md_v2(sepA)), halfB])
     # return "\n".join([title, *headerA, *codeA, "", *sublinesB, *codeB])
 
-async def send_channel_distribution(update: Update, country_groups: dict[str, list[dict]], max_width: int = 35):
+async def send_channel_distribution(
+    update: Update,
+    country_groups: dict[str, list[dict]],
+    max_width: int = 35,
+    pgw: str | None = None,
+):
     for country, rows in sorted(country_groups.items()):
-        text = render_channel_distribution(country, rows)
+        text = render_channel_distribution(country, rows, pgw=pgw)
         # fancy = stylize(text, style = "mono")
         await update.effective_chat.send_message(text, parse_mode=ParseMode.MARKDOWN_V2,
             disable_web_page_preview=False)
@@ -721,8 +725,6 @@ def pad_with_figspace(s: str, width: int, num_seps: int, align: str = "left") ->
     
     convert_pads = string_inlines + f"`{num_seps*" "}`"
     
-    print(f"Len: {len(s)}, Num inlines: {num_inlines}, Num seps: {num_seps}, String: '{s}' -> '{convert_pads + s if align=='right' else s + convert_pads}'")
-
     return (convert_pads + s) if align == "right" else (s + convert_pads)
 
 
@@ -746,7 +748,7 @@ def escape_md_v2(text: str) -> str:
     # escape the full Telegram set
     return re.sub(r"([_*[\]()~`>#+\-=\|{}\.!])", r"\\\1", text)
 
-def render_dpf_table_v2(country, rows, max_width=72, brand=False, widths=None, separators=None):
+def render_dpf_table_v2(country, rows, max_width=72, brand=False, widths=None, separators=None, pgw: str | None = None):
     # --- helpers used here are assumed to exist in your env:
     # escape_md_v2, stylize, inline_code_line, wrap_separators, backtick_with_trailing_spaces
     # _num_to_float, _fmt_commas0, _fmt_pct_int, _shrink_date, _sum_field,
@@ -840,7 +842,6 @@ def render_dpf_table_v2(country, rows, max_width=72, brand=False, widths=None, s
         _a = count_separators(a)
         _t = count_separators(t)
         _x = count_separators(w)
-        print('MAX SEP', x3, 'CURRENT SEP', _x)
         return "  ".join([
             d.ljust(w0),
             replace_spacing(a.rjust(w1), max_sep=x1, cur_sep=_a),
@@ -870,10 +871,11 @@ def render_dpf_table_v2(country, rows, max_width=72, brand=False, widths=None, s
     current_time, _, tz_label = get_country_time_context(country)
     title    = stylize(f"*{escape_md_v2(f'COUNTRY: {country} {flag} ({currency})')}*", style="sans_bold")
     
+    pgw_prefix = f"{str(pgw).upper()} " if pgw else ""
     if list(brand_groups.keys())[0] == "TOTAL":
-        subtitle = "\n" + escape_md_v2(f"{country} Deposit Performance by Country \n(up to {current_time} {tz_label})")
+        subtitle = "\n" + escape_md_v2(f"{country} {pgw_prefix}Deposit Performance by Country \n(up to {current_time} {tz_label})")
     else:
-        subtitle = "\n" + escape_md_v2(f"{country} Deposit Performance by Group \n(up to {current_time} {tz_label})")
+        subtitle = "\n" + escape_md_v2(f"{country} {pgw_prefix}Deposit Performance by Group \n(up to {current_time} {tz_label})")
 
     parts = []
     
@@ -911,73 +913,12 @@ def render_dpf_table_v2(country, rows, max_width=72, brand=False, widths=None, s
     return "\n".join(parts)
 
 def replace_spacing(s: str, max_sep: int, cur_sep: int):
-    print(cur_sep, max_sep, s)
     if cur_sep < max_sep:
         dif = max_sep - cur_sep
-        print(s.replace(" "*dif, f"`{" "*dif}`"), 1)
         return s.replace(" "*dif, f"{" "*dif}", 1)
     else:
         return s
-
-def _generate_dpf_summary_message(rows: list[dict]) -> str:
-    """
-    Generates the text summary comparing the latest two dates.
-    """
-    # 1. Aggregate totals by date (returns sorted: [Today, Yesterday, ...])
-    # We use a temp label just to utilize the aggregator
-    total_rows = _aggregate_dpf_by_date(rows, pseudo_brand="TOTAL")
     
-    # We need at least 2 days to compare
-    if len(total_rows) < 2:
-        return ""
-
-    latest = total_rows[0]
-    prev = total_rows[1]
-
-    # 2. Parse Dates (Input YYYY-MM-DD -> Output "11 Feb")
-    def _fmt_date_short(d_str):
-        try:
-            dt = datetime.strptime(str(d_str), "%Y-%m-%d")
-            return dt.strftime("%d %b")
-        except:
-            return str(d_str)
-
-    d_latest_str = _fmt_date_short(latest["date"])
-    d_prev_str = _fmt_date_short(prev["date"])
-
-    # 3. Math
-    val_latest = float(latest["TotalDeposit"] or 0)
-    val_prev = float(prev["TotalDeposit"] or 0)
-
-    diff_abs = val_latest - val_prev
-    print(diff_abs, val_latest, val_prev)
-    
-    # Growth % = (Current - Prev) / Prev
-    if val_prev != 0:
-        growth_pct = (diff_abs / val_prev) * 100.0
-    else:
-        growth_pct = 100.0 if val_latest > 0 else 0.0
-
-    # 4. Formatting
-    sign = "+" if diff_abs >= 0 else "" 
-    abs_str = _fmt_number(diff_abs) 
-    
-    # 5. Construct Message with Markdown V2 Escaping
-    safe_prev_date = escape_md_v2(d_prev_str)
-    safe_latest_date = escape_md_v2(d_latest_str)
-    safe_sign = escape_md_v2(sign)
-    safe_abs = escape_md_v2(abs_str)
-    safe_pct = escape_md_v2(f"{growth_pct:.0f}")
-
-    line1 = (f"Between {safe_prev_date} and {safe_latest_date}, the total changed by "
-             f"{safe_sign}{safe_pct}% \\({safe_sign} {safe_abs}\\)\\.")
-    
-    # Italicize the Note
-    # note_content = "Note: As of 12 February, the % calculation was updated to (Today - Yesterday) / Yesterday."
-    # line2 = f"_{escape_md_v2(note_content)}_"
-
-    # return f"{line1}\n{line2}"
-    return f"{line1}"
 # ------- aggregate by date (used for group summary / country total) -------
 def _aggregate_dpf_by_date(rows: list[dict], pseudo_brand: str):
     """Per-date totals across given rows; averages averaged; % vs Previous Day."""
@@ -1008,9 +949,222 @@ def _aggregate_dpf_by_date(rows: list[dict], pseudo_brand: str):
 
     return collapsed
 
+def generate_dpp_estimate_message(
+    country: str | None = None,
+    yesterday_full_total: float | None = None,
+    full_data_rows: list[dict] | None = None,
+) -> str:
+    """Generate a DPP estimate sentence using full data growth."""
+    if not full_data_rows:
+        return ""
+        
+    full_agg = _aggregate_dpf_by_date(full_data_rows, pseudo_brand="TOTAL")
+    if len(full_agg) < 2:
+        return ""
+
+    latest = full_agg[0]
+    prev = full_agg[1]
+
+    # CHANGED: Unified date format to match the upper sentence (e.g., 07 Apr)
+    def _fmt_date_short(d_str):
+        try:
+            dt = datetime.strptime(str(d_str), "%Y-%m-%d")
+            return dt.strftime("%d %b")
+        except:
+            return str(d_str)
+
+    def _fmt_volume_short(v):
+        try:
+            n = float(v or 0)
+        except Exception:
+            return str(v)
+        abs_n = abs(n)
+        if abs_n >= 1_000_000:
+            return f"{n / 1_000_000:.2f}M"
+        if abs_n >= 1_000:
+            return f"{n / 1_000:.2f}K"
+        return f"{n:.0f}"
+
+    estimate_date = _fmt_date_short(latest["date"])
+    yesterday_date = _fmt_date_short(prev["date"])
+
+    if yesterday_full_total is None or yesterday_full_total == 0:
+        return ""
+
+    prev_value = float(yesterday_full_total)
+    
+    # Growth of FULL data (overall, not just DPP)
+    full_val_latest = float(latest["TotalDeposit"] or 0)
+    full_val_prev = float(prev["TotalDeposit"] or 0)
+
+    if full_val_prev != 0:
+        growth_pct = ((full_val_latest - full_val_prev) / full_val_prev) * 100.0
+    else:
+        growth_pct = 100.0 if full_val_latest > 0 else 0.0
+
+    # Calculate estimate volume using yesterday's FULL DAY DPP VOLUME and TODAY'S FULL DATA GROWTH
+    estimated_volume_value = prev_value * (1.0 + (growth_pct / 100.0))
+
+    est_volume = _fmt_volume_short(estimated_volume_value)
+    yesterday_volume = _fmt_volume_short(prev_value)
+    
+    # CHANGED: Unified percentage format to match the integer format (e.g., +13%)
+    pct_realtime = f"{growth_pct:+.0f}%"
+    current_time, _, tz_label = get_country_time_context(country)
+
+    sentence = (
+        f"The DPP Deposit Volume estimation for {estimate_date} is ~{est_volume}, "
+        f"based on yesterday's ({yesterday_date}) completed deposits of {yesterday_volume} "
+        f"and a real-time estimation of {pct_realtime} as of {current_time} {tz_label}."
+    )
+    return escape_md_v2(sentence)
+
+def _generate_dpf_summary_message(
+    rows: list[dict],
+    country: str | None = None,
+    pgw: str | None = None,
+    yesterday_full_total: float | None = None,
+    full_data_rows: list[dict] | None = None,
+) -> str:
+    """
+    Generates the text summary comparing the latest two dates + DPP estimate.
+    """
+    summary_text = ""
+    # 1. Aggregate totals by date for whatever was queried
+    total_rows = _aggregate_dpf_by_date(rows, pseudo_brand="TOTAL")
+    
+    if len(total_rows) >= 2:
+        latest = total_rows[0]
+        prev = total_rows[1]
+
+        def _fmt_date_short(d_str):
+            try:
+                dt = datetime.strptime(str(d_str), "%Y-%m-%d")
+                return dt.strftime("%d %b")
+            except:
+                return str(d_str)
+
+        d_latest_str = _fmt_date_short(latest["date"])
+        d_prev_str = _fmt_date_short(prev["date"])
+
+        val_latest = float(latest["TotalDeposit"] or 0)
+        val_prev = float(prev["TotalDeposit"] or 0)
+
+        diff_abs = val_latest - val_prev
+        
+        if val_prev != 0:
+            growth_pct = (diff_abs / val_prev) * 100.0
+        else:
+            growth_pct = 100.0 if val_latest > 0 else 0.0
+
+        sign = "+" if diff_abs >= 0 else "" 
+        abs_str = _fmt_number(diff_abs) 
+        
+        safe_prev_date = escape_md_v2(d_prev_str)
+        safe_latest_date = escape_md_v2(d_latest_str)
+        safe_sign = escape_md_v2(sign)
+        safe_abs = escape_md_v2(abs_str)
+        safe_pct = escape_md_v2(f"{growth_pct:.0f}")
+
+        summary_text = (f"Between {safe_prev_date} and {safe_latest_date}, the total changed by "
+                        f"{safe_sign}{safe_pct}% \\({safe_sign}{safe_abs}\\)\\.")
+        
+    # 2. Always attempt to append the DPP estimation
+    dpp_estimate = generate_dpp_estimate_message(
+        country=country,
+        yesterday_full_total=yesterday_full_total,
+        full_data_rows=full_data_rows
+    )
+
+    if summary_text and dpp_estimate:
+        # CHANGED: Added the extra \n back in to create a blank line between the two sentences
+        return f"{summary_text}\n\n{dpp_estimate}"
+    elif dpp_estimate:
+        return dpp_estimate
+    
+    return summary_text
+
+async def send_dpf_tables(
+    update: Update,
+    country_groups: dict[str, list[dict]],
+    max_width: int = 72,
+    pgw: str | None = None,
+    yesterday_full_totals: dict[str, float] | None = None,
+    full_data_rows_by_country: dict[str, list[dict]] | None = None,
+):
+    try:
+        send_delay = max(0.0, float(os.getenv("DPF_MESSAGE_DELAY_SECONDS", "0.25").strip()))
+    except ValueError:
+        send_delay = 0.25
+
+    for country, rows in sorted(country_groups.items()):
+        
+        # split by group
+        groups = defaultdict(list)
+        for r in rows:
+            g = r.get("group") or "Unknown"
+            groups[g].append(r)
+
+        # order groups by summed TotalDeposit desc
+        groups_sorted = sorted(groups.items(), key=lambda kv: _sum_field(kv[1], "TotalDeposit"), reverse=True)
+
+        # one message per group (group summary + brands)
+        for gname, g_rows in groups_sorted:
+            msg = render_dpf_group_then_brands(country, gname, g_rows, max_width=max_width, pgw=pgw)
+            for chunk in split_table_text_customize(msg, first_len=2000):
+                await update.effective_chat.send_message(
+                chunk, 
+                parse_mode=ParseMode.MARKDOWN_V2,
+                disable_web_page_preview=True
+                )
+                if send_delay > 0:
+                    await asyncio.sleep(send_delay)
+
+        # final country GRAND TOTAL by date
+        total_msg = render_dpf_country_total(country, rows, max_width=max_width, pgw=pgw)
+        for chunk in split_table_text_customize(total_msg, first_len=2000):
+            await update.effective_chat.send_message(
+            chunk, 
+            parse_mode=ParseMode.MARKDOWN_V2, 
+            disable_web_page_preview=True
+            )
+            if send_delay > 0:
+                await asyncio.sleep(send_delay)
+            
+        # --- Send Summary Message First ---
+        try:
+            full_rows = full_data_rows_by_country.get(country, []) if full_data_rows_by_country else []
+            summary_msg = _generate_dpf_summary_message(
+                rows,
+                country=country,
+                pgw=pgw,
+                yesterday_full_total=(
+                    None
+                    if not yesterday_full_totals
+                    else yesterday_full_totals.get(str(country).upper())
+                ),
+                full_data_rows=full_rows,
+            )
+            if summary_msg:
+                await update.effective_chat.send_message(
+                    summary_msg,
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    disable_web_page_preview=True
+                )
+                if send_delay > 0:
+                    await asyncio.sleep(send_delay)
+        except Exception as e:
+            logger.warning("Error sending summary for %s: %s", country, e)
+
 # ------- DPF group -> brands (no inline tick; figure spaces) -------
 
-def render_dpf_group_then_brands(country: str, group_name: str, group_rows: list[dict], max_width=72) -> str:
+def render_dpf_group_then_brands(
+    country: str,
+    group_name: str,
+    group_rows: list[dict],
+    max_width=72,
+    pgw: str | None = None,
+) -> str:
     # 1. Aggregate group summary data
     group_summary_rows = _aggregate_dpf_by_date(group_rows, pseudo_brand=group_name.upper())
     
@@ -1065,7 +1219,8 @@ def render_dpf_group_then_brands(country: str, group_name: str, group_rows: list
         group_summary_rows, 
         max_width=max_width, 
         widths=common_widths, 
-        separators=common_separators
+        separators=common_separators,
+        pgw=pgw,
     )
     
     brands_block = render_dpf_table_v2(
@@ -1074,7 +1229,8 @@ def render_dpf_group_then_brands(country: str, group_name: str, group_rows: list
         max_width=max_width, 
         brand=True, 
         widths=common_widths, 
-        separators=common_separators
+        separators=common_separators,
+        pgw=pgw,
     )
     
     if (country != "BD") and (country != "PK"):
@@ -1082,76 +1238,16 @@ def render_dpf_group_then_brands(country: str, group_name: str, group_rows: list
         return "\n".join([group_block, sep_line, brands_block])
     
     current_time, _, tz_label = get_country_time_context(country)
-    subtitle = escape_md_v2(f"{country} Deposit Summary by Group \n(up to {current_time} {tz_label})")
+    pgw_prefix = f"{str(pgw).upper()} " if pgw else ""
+    subtitle = escape_md_v2(f"{country} {pgw_prefix}Deposit Summary by Group \n(up to {current_time} {tz_label})")
     parts = [subtitle, brands_block]
 
     return "\n".join(parts)
 
 # ------- DPF country GRAND TOTAL (no inline tick; figure spaces) -------
-def render_dpf_country_total(country: str, rows: list[dict], max_width=72) -> str:
+def render_dpf_country_total(country: str, rows: list[dict], max_width=72, pgw: str | None = None) -> str:
     total_rows = _aggregate_dpf_by_date(rows, pseudo_brand="TOTAL")
-    return render_dpf_table_v2(country, total_rows, max_width=max_width, brand=False)
-
-# ------- sender (sort groups by TotalDeposit desc) -------
-async def send_dpf_tables(update: Update, country_groups: dict[str, list[dict]], max_width: int = 72):
-    try:
-        send_delay = max(0.0, float(os.getenv("DPF_MESSAGE_DELAY_SECONDS", "0.25").strip()))
-    except ValueError:
-        send_delay = 0.25
-
-    # def escape_md_v2(text: str) -> str:
-    #     for ch in r"=-,+":
-    #         text = text.replace(ch, "\\"+ch)
-    #     return text
-
-    for country, rows in sorted(country_groups.items()):
-        # --- END NEW ---
-        
-        # split by group
-        groups = defaultdict(list)
-        for r in rows:
-            g = r.get("group") or "Unknown"
-            groups[g].append(r)
-
-        # order groups by summed TotalDeposit desc
-        groups_sorted = sorted(groups.items(), key=lambda kv: _sum_field(kv[1], "TotalDeposit"), reverse=True)
-
-        # one message per group (group summary + brands)
-        for gname, g_rows in groups_sorted:
-            msg = render_dpf_group_then_brands(country, gname, g_rows, max_width=max_width)
-            for chunk in split_table_text_customize(msg, first_len=2000):
-                await update.effective_chat.send_message(
-                chunk, 
-                parse_mode=ParseMode.MARKDOWN_V2,
-                disable_web_page_preview=True
-                )
-                if send_delay > 0:
-                    await asyncio.sleep(send_delay)
-
-        # final country GRAND TOTAL by date
-        total_msg = render_dpf_country_total(country, rows, max_width=max_width)
-        for chunk in split_table_text_customize(total_msg, first_len=2000):
-            await update.effective_chat.send_message(
-            chunk, 
-            parse_mode=ParseMode.MARKDOWN_V2, 
-            disable_web_page_preview=True
-            )
-            if send_delay > 0:
-                await asyncio.sleep(send_delay)
-            
-        # --- NEW: Send Summary Message First ---
-        try:
-            summary_msg = _generate_dpf_summary_message(rows)
-            if summary_msg:
-                await update.effective_chat.send_message(
-                    summary_msg,
-                    parse_mode=ParseMode.MARKDOWN_V2,
-                    disable_web_page_preview=True
-                )
-                if send_delay > 0:
-                    await asyncio.sleep(send_delay)
-        except Exception as e:
-            print(f"Error sending summary for {country}: {e}")
+    return render_dpf_table_v2(country, total_rows, max_width=max_width, brand=False, pgw=pgw)
 # -----------------------------------------------------------
 import pandas as pd
 # /pmh provider TH 20251006
@@ -1395,7 +1491,7 @@ async def send_method_summaries(update: Update, df: pd.DataFrame, target_date: s
 
         except Exception as e:
             error_msg = f"Failed to generate method report for {country}: {e}"
-            print(error_msg)
+            logger.exception(error_msg)
             await update.effective_chat.send_message(
                 escape_md_v2(error_msg), parse_mode=ParseMode.MARKDOWN_V2
             )
@@ -1585,7 +1681,7 @@ async def send_provider_summaries(update: Update, df: pd.DataFrame, target_date:
 
         except Exception as e:
             error_msg = f"Failed to generate report for {country}: {e}"
-            print(error_msg)
+            logger.exception(error_msg)
             await update.effective_chat.send_message(
                 escape_md_v2(error_msg), parse_mode=ParseMode.MARKDOWN_V2
             )
@@ -2176,8 +2272,6 @@ def wrap_separators(s: str) -> str:
     # return final_result
     return s
 
-import re
-
 def backtick_with_trailing_spaces(line: str, spaces: list[int]) -> str:
     """
     Example:
@@ -2229,8 +2323,6 @@ def backtick_with_trailing_spaces(line: str, spaces: list[int]) -> str:
             tail = "".join(tail_parts)
             out.append(f"`{tail}`")
             break
-    total = "".join(out)
-    time.sleep(0.5) # Pause for half a second
     # Join WITHOUT adding extra spaces (we already preserved originals)
-    return total
+    return "".join(out)
 # %%

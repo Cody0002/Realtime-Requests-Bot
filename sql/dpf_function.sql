@@ -35,6 +35,7 @@ base AS (
     ON cn.country = LEFT(f.reqCurrency, 2)
   WHERE f.type = 'deposit'
     AND f.status = 'completed'
+    AND (@selected_pgw IS NULL OR LOWER(COALESCE(f.method, '')) LIKE CONCAT(LOWER(@selected_pgw), '%'))
     -- Range wide enough to cover supported local timezones (+8 to -6) for the 3-day window.
     AND f.insertedAt >= TIMESTAMP_SUB(TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY)), INTERVAL 8 HOUR)
     AND f.insertedAt <  TIMESTAMP_ADD(TIMESTAMP(DATE_ADD(CURRENT_DATE(), INTERVAL 1 DAY)), INTERVAL 6 HOUR)

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from bot.config import Config
 from bot.bq_client import BigQueryClient
-from bot.table_renderer import send_apf_tables, send_channel_distribution, send_dpf_tables, send_pmh_total, send_pmh_week
+from bot.table_renderer import send_apf_tables, send_channel_distribution, send_dpf_tables, send_pmh_total, send_pmh_week, generate_dpp_estimate_message
 
 from bot.table_renderer import (send_provider_summaries, send_method_summaries
 )
@@ -18,6 +18,7 @@ from bot.table_renderer import (send_provider_summaries, send_method_summaries
 import pandas as pd
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+import asyncio
 
 import hmac, hashlib, base64, secrets, time  # add these
 # Load environment variables
@@ -25,6 +26,7 @@ load_dotenv()
 
 VALID_COMMANDS= {"apf", "dpf", "dist", "pmh_total", "pmh_provider", "pmh_method", "pmh_week"}
 LIST_VALID_COMMANDS = ["apf", "dpf", "dist", "pmh_total", "pmh_provider", "pmh_method", "pmh_week"]
+SUPPORTED_PGWS = {"DPP"}
 # --- Aliases ---
 PMH_ALIAS = {"pmh": ["pmh_total", "pmh_provider", "pmh_method", "pmh_week"]}
 def _expand_aliases(cmds: list[str]) -> list[str]:
@@ -230,7 +232,7 @@ class RealTimeBot:
 
         # --- NEW: Block non-admins in Private Chats (DM) ---
         if chat.type in ("private", "PRIVATE"):
-            print("PRIVATE")
+            logger.debug("Private chat access check for user_id=%s", user.id if user else None)
             if not self._is_admin(update):
                 if msg:
                     await msg.reply_text("⛔ Access denied. Please contact an administrator for permission.")
@@ -1058,32 +1060,29 @@ class RealTimeBot:
         await self._pmh_command_core(update, context, mode="method")
 
     async def dist_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """
-        /dist: exact-date distribution in NATIVE currency.
-        Usage:
-          /dist a 20250901
-          /dist TH 20250901
-        """
-        # user = update.effective_user
-        # if not user or user.id not in self.registered_users:
-        #     return await update.effective_chat.send_message("⚠️ Please register first by contacting the admin.")
-        
         if not await self._ensure_allowed(update, "dist"):
             return
-        # self._log_event({
-        # **self._base_payload(update),
-        # "event": "command",
-        # "command": update.effective_message.text,   # logs "/help" or "/start"
-        # })
+            
         try:
-            if len(context.args) < 2:
+            if len(context.args) not in (2, 3):
                 return await update.effective_chat.send_message(
-                    "Usage: `/dist a <YYYYMMDD>` or `/dist <COUNTRY> <YYYYMMDD>`",
+                    "Usage: `/dist a <YYYYMMDD>` or `/dist <COUNTRY> <YYYYMMDD>`.",
                     parse_mode=ParseMode.MARKDOWN
                 )
 
-            selector = context.args[0].upper().strip()
-            date_str = context.args[1].strip()
+            selected_pgw = None
+            if len(context.args) == 3:
+                selected_pgw = context.args[0].upper().strip()
+                selector = context.args[1].upper().strip()
+                date_str = context.args[2].strip()
+                if selected_pgw not in SUPPORTED_PGWS:
+                    return await update.effective_chat.send_message(
+                        f"❌ Unsupported PGW `{selected_pgw}`. Allowed: {', '.join(sorted(SUPPORTED_PGWS))}",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+            else:
+                selector = context.args[0].upper().strip()
+                date_str = context.args[1].strip()
 
             # Parse target date
             try:
@@ -1109,11 +1108,41 @@ class RealTimeBot:
                 target_label = selector
 
             # Query BQ: exact date + native currency
-            rows = await self.bq_client.execute_dist_query(target_date, selected_country_value)
+            today_date = datetime.now(ZoneInfo("Asia/Bangkok")).strftime("%Y-%m-%d")
+            yesterday_full_totals = None
+            full_dpf_rows = []
+            
+            if target_date == today_date:
+                rows, yesterday_full_rows, full_dpf_rows = await asyncio.gather(
+                    self.bq_client.execute_dist_query(
+                        target_date=target_date,
+                        selected_country=selected_country_value,
+                        selected_pgw=selected_pgw,
+                    ),
+                    self.bq_client.execute_dpf_yesterday_full_totals(
+                        target_country=selected_country_value,
+                        selected_pgw="DPP", # ALWAYS fetch DPP baseline
+                    ),
+                    self.bq_client.execute_dpf_query(
+                        target_country=selected_country_value,
+                        selected_pgw=None, # ALWAYS fetch full data
+                    )
+                )
+                yesterday_full_totals = {
+                    str(r.get("country") or "").upper(): float(r.get("full_yesterday_total") or 0)
+                    for r in yesterday_full_rows
+                }
+            else:
+                rows = await self.bq_client.execute_dist_query(
+                    target_date=target_date,
+                    selected_country=selected_country_value,
+                    selected_pgw=selected_pgw,
+                )
 
             if not rows:
+                pgw_label = f" ({selected_pgw})" if selected_pgw else ""
                 return await update.effective_chat.send_message(
-                    f"No results for {target_label} on {target_date}.",
+                    f"No results for {target_label}{pgw_label} on {target_date}.",
                     parse_mode=ParseMode.MARKDOWN
                 )
 
@@ -1124,15 +1153,36 @@ class RealTimeBot:
                 country_groups.setdefault(c, []).append(r)
 
             # Header
+            pgw_prefix = f"{selected_pgw} " if selected_pgw else ""
             header_text = (
-                f"📊 *Deposit Channel Distribution* \n"
+                f"📊 *{pgw_prefix}Deposit Channel Distribution* \n"
                 f"⏰ Date: {target_date}\n"
-
             )
             await update.effective_chat.send_message(header_text, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
 
-            # Render (table_renderer handles native currency keys)
-            await send_channel_distribution(update, country_groups, max_width=72)
+            # Render
+            await send_channel_distribution(update, country_groups, max_width=72, pgw=selected_pgw)
+
+            # if target_date == today_date:
+            #     if yesterday_full_totals is not None:
+            #         if selected_country_value is None:
+            #             yesterday_full_total = sum(yesterday_full_totals.values())
+            #         else:
+            #             yesterday_full_total = yesterday_full_totals.get(selected_country_value, None)
+            #     else:
+            #         yesterday_full_total = None
+
+                # estimate_msg = generate_dpp_estimate_message(
+                #     country=selected_country_value,
+                #     yesterday_full_total=yesterday_full_total,
+                #     full_data_rows=full_dpf_rows,
+                # )
+                # if estimate_msg:
+                #     await update.effective_chat.send_message(
+                #         estimate_msg,
+                #         parse_mode=ParseMode.MARKDOWN_V2,
+                #         disable_web_page_preview=True,
+                #     )
 
         except Exception as e:
             logging.exception("Error in /dist")
@@ -1147,29 +1197,31 @@ class RealTimeBot:
         def normalize_brand(b):
             KEEP_BRANDS = {"96G", "BLG", "WDB"}
             s = "" if b is None else str(b).strip()
-            s = s.rstrip("12").upper()      # optional: drop trailing 1/2, normalize case
+            s = s.rstrip("12").upper()      
             return s if s in KEEP_BRANDS else "KZO"
-        # self._log_event({
-        # **self._base_payload(update),
-        # "event": "command",
-        # "command": update.effective_message.text,   # logs "/help" or "/start"
-        # })
-
-        # user = update.effective_user
-        # if not user or user.id not in self.registered_users:
-        #     return await update.effective_chat.send_message("⚠️ Please register first by contacting the admin.")
-        
+            
         if not await self._ensure_allowed(update, "dpf"):
             return
         
         try:
-            if not context.args:
+            if len(context.args) not in (1, 2):
                 return await update.effective_chat.send_message(
-                    "Usage: `/dpf a` or `/dpf <COUNTRY>` (TH, PH, BD, PK, BR, MX, CO)",
+                    "Usage: `/dpf a` or `/dpf <COUNTRY>`.",
                     parse_mode=ParseMode.MARKDOWN,
                 )
 
-            sel = context.args[0].upper().strip()
+            selected_pgw = None
+            if len(context.args) == 2:
+                selected_pgw = context.args[0].upper().strip()
+                if selected_pgw not in SUPPORTED_PGWS:
+                    return await update.effective_chat.send_message(
+                        f"❌ Unsupported PGW `{selected_pgw}`. Allowed: {', '.join(sorted(SUPPORTED_PGWS))}",
+                        parse_mode=ParseMode.MARKDOWN,
+                    )
+                sel = context.args[1].upper().strip()
+            else:
+                sel = context.args[0].upper().strip()
+
             if sel == "A":
                 selected_country = None
                 scope_label = "all countries"
@@ -1183,10 +1235,42 @@ class RealTimeBot:
                 scope_label = sel
 
             q0 = time.perf_counter()
-            rows = await self.bq_client.execute_dpf_query(selected_country)
+            
+            # ALWAYS fetch all three
+            tasks = [
+                self.bq_client.execute_dpf_query(
+                    target_country=selected_country,
+                    selected_pgw=selected_pgw,
+                ),
+                self.bq_client.execute_dpf_yesterday_full_totals(
+                    target_country=selected_country,
+                    selected_pgw="DPP", # ALWAYS fetch DPP baseline
+                ),
+                self.bq_client.execute_dpf_query(
+                    target_country=selected_country,
+                    selected_pgw=None, # ALWAYS fetch full data
+                )
+            ]
+
+            results = await asyncio.gather(*tasks)
+            rows = results[0]
+            yesterday_full_rows = results[1]
+            full_dpf_rows = results[2] 
+            
+            yesterday_full_totals = {
+                str(r.get("country") or "").upper(): float(r.get("full_yesterday_total") or 0)
+                for r in yesterday_full_rows
+            }
+            
+            full_data_rows_by_country = {}
+            for r in full_dpf_rows:
+                c = (r.get("country") or "") or "Unknown"
+                full_data_rows_by_country.setdefault(c, []).append(r)
+
             q_elapsed = time.perf_counter() - q0
             if not rows:
-                return await update.effective_chat.send_message(f"No deposit data for {scope_label}.")
+                pgw_label = f" ({selected_pgw})" if selected_pgw else ""
+                return await update.effective_chat.send_message(f"No deposit data for {scope_label}{pgw_label}.")
 
             country_groups: dict[str, list[dict]] = {}
             for r in rows:
@@ -1200,21 +1284,22 @@ class RealTimeBot:
                 country_groups.setdefault(c, []).append(r)
 
             current_time, date_range = get_date_range_header()
-            header_text = (
-                f"💸 *Deposit Performance* \n"
-                f"⏰ Data up to {current_time} (local time) for each day \n"
-                f"📅 Date range: {date_range[2]} → {date_range[0]}\n"
-                "`%` ~ Percent vs. latest day’s total"
-            )
-            # await update.effective_chat.send_message(header_text, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
 
             s0 = time.perf_counter()
-            await send_dpf_tables(update, country_groups, max_width=52)
+            await send_dpf_tables(
+                update,
+                country_groups,
+                max_width=52,
+                pgw=selected_pgw,
+                yesterday_full_totals=yesterday_full_totals,
+                full_data_rows_by_country=full_data_rows_by_country,
+            )
             send_elapsed = time.perf_counter() - s0
             total_elapsed = time.perf_counter() - t0
             logger.info(
-                "/dpf timing country=%s query=%.2fs send=%.2fs total=%.2fs rows=%s",
+                "/dpf timing country=%s pgw=%s query=%.2fs send=%.2fs total=%.2fs rows=%s",
                 selected_country or "ALL",
+                selected_pgw or "ALL",
                 q_elapsed,
                 send_elapsed,
                 total_elapsed,
@@ -1223,6 +1308,42 @@ class RealTimeBot:
 
         except Exception as e:
             logger.exception("Error in /dpf")
+            await update.effective_chat.send_message(
+                f"Error: `{e}`\nLocation: {self.config.BQ_LOCATION}",
+                parse_mode=ParseMode.MARKDOWN
+            )
+
+    async def usage_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Hidden admin-only command.
+        Show BigQuery usage of the current bot identity for last 3 days.
+        """
+        if not self._is_admin(update):
+            return await update.effective_chat.send_message("⚠️ You are not authorized to use this command.")
+
+        try:
+            rows = await self.bq_client.execute_usage_last_3_days()
+            if not rows:
+                return await update.effective_chat.send_message("No usage data found.")
+
+            lines = ["📈 *BigQuery Usage \\(Last 3 Days\\)*", "_Timezone: Asia/Bangkok_"]
+            for idx, row in enumerate(rows, start=1):
+                usage_date = str(row.get("usage_date"))
+                query_count = int(row.get("query_count") or 0)
+                total_gb = float(row.get("total_gb") or 0.0)
+                lines.append(
+                    f"Day {idx} total \\({usage_date}\\): {query_count:,} queries / {total_gb:,.3f} GBs"
+                )
+
+            await update.effective_chat.send_message(
+                "\n".join(lines),
+                parse_mode=ParseMode.MARKDOWN_V2,
+                disable_web_page_preview=True,
+            )
+            # Explicitly release temporary usage payload after responding.
+            rows.clear()
+        except Exception as e:
+            logger.exception("Error in /usage")
             await update.effective_chat.send_message(
                 f"Error: `{e}`\nLocation: {self.config.BQ_LOCATION}",
                 parse_mode=ParseMode.MARKDOWN
@@ -1331,6 +1452,7 @@ class RealTimeBot:
 
         application.add_handler(CommandHandler("admin_create_link", self.admin_create_link))
         application.add_handler(CommandHandler("permission", self.permission_command))
+        application.add_handler(CommandHandler("usage", self.usage_command))
 
 
         # Catch-all for logging all invalid messages

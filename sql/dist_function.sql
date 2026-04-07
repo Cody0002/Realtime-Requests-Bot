@@ -12,6 +12,7 @@ WITH deposit_raw AS (
   WHERE
     f.type = 'deposit'
     AND f.status = 'completed'
+    AND (@selected_pgw IS NULL OR LOWER(COALESCE(f.method, '')) LIKE CONCAT(LOWER(@selected_pgw), '%'))
     -- Range: [target - 8h] (start of UTC+8) to [target + 1d + 6h] (end of UTC-6)
     AND f.insertedAt >= TIMESTAMP_SUB(TIMESTAMP(@target_date), INTERVAL 8 HOUR)
     AND f.insertedAt <  TIMESTAMP_ADD(TIMESTAMP_ADD(TIMESTAMP(@target_date), INTERVAL 1 DAY), INTERVAL 6 HOUR)

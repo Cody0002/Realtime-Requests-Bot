@@ -128,7 +128,10 @@ Key Advantage: Pattern 2 allows instant access management - admins can control w
 
 #### `/dpf <country|a>`
 - **Purpose**: Deposit Performance Report
-- **Parameters**: Same as APF
+- **Parameters**:
+  - Country selector (`a` for all, or specific country code)
+- **Examples**:
+  - `/dpf BD`
 - **Output**: Average/Total deposit amounts with performance percentages
 
 #### `/dist <country|a> <YYYYMMDD>`
@@ -136,6 +139,8 @@ Key Advantage: Pattern 2 allows instant access management - admins can control w
 - **Parameters**:
   - Country selector (a for all, or specific country code)
   - Date in YYYYMMDD format
+- **Examples**:
+  - `/dist a 20260401`
 - **Output**: Payment method breakdown with volumes and percentages
 
 ### Administrative Commands [Admin only]
