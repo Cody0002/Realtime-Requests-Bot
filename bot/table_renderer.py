@@ -1013,7 +1013,7 @@ def generate_dpp_estimate_message(
     current_time, _, tz_label = get_country_time_context(country)
 
     sentence = (
-        f"The DPP Deposit Volume estimation for {estimate_date} is ~{est_volume}, "
+        f"The DPP Deposit Volume estimation for {estimate_date} is approx. {est_volume}, "
         f"based on yesterday's ({yesterday_date}) completed deposits of {yesterday_volume} "
         f"and a real-time estimation of {pct_realtime} as of {current_time} {tz_label}."
     )
@@ -1091,6 +1091,7 @@ async def send_dpf_tables(
     pgw: str | None = None,
     yesterday_full_totals: dict[str, float] | None = None,
     full_data_rows_by_country: dict[str, list[dict]] | None = None,
+    dpp_data_rows_by_country: dict[str, list[dict]] | None = None,
 ):
     try:
         send_delay = max(0.0, float(os.getenv("DPF_MESSAGE_DELAY_SECONDS", "0.25").strip()))
@@ -1130,7 +1131,21 @@ async def send_dpf_tables(
             )
             if send_delay > 0:
                 await asyncio.sleep(send_delay)
-            
+
+        # extra DPP-only country GRAND TOTAL (skip if current query is already DPP)
+        selected_pgw = str(pgw).upper() if pgw else None
+        dpp_rows = dpp_data_rows_by_country.get(country, []) if dpp_data_rows_by_country else []
+        if selected_pgw != "DPP" and dpp_rows:
+            dpp_total_msg = render_dpf_country_total(country, dpp_rows, max_width=max_width, pgw="DPP")
+            for chunk in split_table_text_customize(dpp_total_msg, first_len=2000):
+                await update.effective_chat.send_message(
+                chunk,
+                parse_mode=ParseMode.MARKDOWN_V2,
+                disable_web_page_preview=True
+                )
+                if send_delay > 0:
+                    await asyncio.sleep(send_delay)
+             
         # --- Send Summary Message First ---
         try:
             full_rows = full_data_rows_by_country.get(country, []) if full_data_rows_by_country else []

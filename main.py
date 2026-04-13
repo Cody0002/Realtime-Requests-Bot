@@ -1249,13 +1249,18 @@ class RealTimeBot:
                 self.bq_client.execute_dpf_query(
                     target_country=selected_country,
                     selected_pgw=None, # ALWAYS fetch full data
-                )
+                ),
+                self.bq_client.execute_dpf_query(
+                    target_country=selected_country,
+                    selected_pgw="DPP", # ALWAYS fetch DPP-only data for country summary block
+                ),
             ]
 
             results = await asyncio.gather(*tasks)
             rows = results[0]
             yesterday_full_rows = results[1]
-            full_dpf_rows = results[2] 
+            full_dpf_rows = results[2]
+            dpp_dpf_rows = results[3]
             
             yesterday_full_totals = {
                 str(r.get("country") or "").upper(): float(r.get("full_yesterday_total") or 0)
@@ -1266,6 +1271,11 @@ class RealTimeBot:
             for r in full_dpf_rows:
                 c = (r.get("country") or "") or "Unknown"
                 full_data_rows_by_country.setdefault(c, []).append(r)
+
+            dpp_data_rows_by_country = {}
+            for r in dpp_dpf_rows:
+                c = (r.get("country") or "") or "Unknown"
+                dpp_data_rows_by_country.setdefault(c, []).append(r)
 
             q_elapsed = time.perf_counter() - q0
             if not rows:
@@ -1293,6 +1303,7 @@ class RealTimeBot:
                 pgw=selected_pgw,
                 yesterday_full_totals=yesterday_full_totals,
                 full_data_rows_by_country=full_data_rows_by_country,
+                dpp_data_rows_by_country=dpp_data_rows_by_country,
             )
             send_elapsed = time.perf_counter() - s0
             total_elapsed = time.perf_counter() - t0
