@@ -25,6 +25,7 @@ watcher.py
 secrets*/ 
 *.sqlite
 .ssh
+tests/
 
 # Build / misc
 dist/

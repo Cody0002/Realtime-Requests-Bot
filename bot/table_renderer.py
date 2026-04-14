@@ -873,7 +873,11 @@ def render_dpf_table_v2(country, rows, max_width=72, brand=False, widths=None, s
     
     pgw_prefix = f"{str(pgw).upper()} " if pgw else ""
     if list(brand_groups.keys())[0] == "TOTAL":
-        subtitle = "\n" + escape_md_v2(f"{country} {pgw_prefix}Deposit Performance by Country \n(up to {current_time} {tz_label})")
+        subtitle_text = f"{country} {pgw_prefix}Deposit Performance by Country \n(up to {current_time} {tz_label})"
+        if str(pgw).upper() == "DPP":
+            subtitle = "\n" + escape_md_v2(f"New Feature Test:\n{subtitle_text}")
+        else:
+            subtitle = "\n" + escape_md_v2(subtitle_text)
     else:
         subtitle = "\n" + escape_md_v2(f"{country} {pgw_prefix}Deposit Performance by Group \n(up to {current_time} {tz_label})")
 
