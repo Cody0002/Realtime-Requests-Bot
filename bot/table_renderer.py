@@ -873,9 +873,9 @@ def render_dpf_table_v2(country, rows, max_width=72, brand=False, widths=None, s
     
     pgw_prefix = f"{str(pgw).upper()} " if pgw else ""
     if list(brand_groups.keys())[0] == "TOTAL":
-        subtitle = "\n" + escape_md_v2(f"{country} {pgw_prefix}Deposit Performance by Country \n(up to {current_time} {tz_label})")
+        subtitle = "New Feature Test:" + "\n" + escape_md_v2(f"{country} {pgw_prefix}Deposit Performance by Country \n(up to {current_time} {tz_label})")
     else:
-        subtitle = "\n" + escape_md_v2(f"{country} {pgw_prefix}Deposit Performance by Group \n(up to {current_time} {tz_label})")
+        subtitle = "New Feature Test:" + "\n" + escape_md_v2(f"{country} {pgw_prefix}Deposit Performance by Group \n(up to {current_time} {tz_label})")
 
     parts = []
     
@@ -1013,6 +1013,7 @@ def generate_dpp_estimate_message(
     current_time, _, tz_label = get_country_time_context(country)
 
     sentence = (
+        f"New Feature Test:\n"
         f"The DPP Deposit Volume estimation for {estimate_date} is approx. {est_volume}, "
         f"based on yesterday's ({yesterday_date}) completed deposits of {yesterday_volume} "
         f"and a real-time estimation of {pct_realtime} as of {current_time} {tz_label}."
