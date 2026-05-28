@@ -631,7 +631,7 @@ def render_channel_distribution(country: str, rows: list[dict], topn: int = 5, p
     codeA = [(inline_code_line(l)) for l in linesA]
 
     codeB = [escape_md_v2(l) for l in linesB]
-    halfB = f"`{'\n'.join([*codeB])}`"
+    halfB = "`" + "\n".join(codeB) + "`"
     # print(halfB)
     # print("\n".join([title, *codeA]))
     return "\n".join([title,*codeA, "", inline_code(escape_md_v2(sepA)), halfB])
@@ -723,7 +723,7 @@ def pad_with_figspace(s: str, width: int, num_seps: int, align: str = "left") ->
 
     string_inlines = "" if num_inlines == 0 else f"{num_inlines*' '}"
     
-    convert_pads = string_inlines + f"`{num_seps*" "}`"
+    convert_pads = string_inlines + "`" + (" " * num_seps) + "`"
     
     return (convert_pads + s) if align == "right" else (s + convert_pads)
 
@@ -919,7 +919,7 @@ def render_dpf_table_v2(country, rows, max_width=72, brand=False, widths=None, s
 def replace_spacing(s: str, max_sep: int, cur_sep: int):
     if cur_sep < max_sep:
         dif = max_sep - cur_sep
-        return s.replace(" "*dif, f"{" "*dif}", 1)
+        return s.replace(" " * dif, " " * dif, 1)
     else:
         return s
     
@@ -2232,10 +2232,10 @@ async def send_pmh_week(update: Update, df: pd.DataFrame, as_of_date: str):
             hdr_range,
             "",
             # escape_md_v2("DEPOSITS WEEKLY REPORT"),
-           stylize(f"*{escape_md_v2("DEPOSITS REPORT")}*", style="sans_bold"),
+           stylize(f"*{escape_md_v2('DEPOSITS REPORT')}*", style="sans_bold"),
            f"`{deposits_table}`",
             "",
-            stylize(f"*{escape_md_v2("DEPOSITS +/- %")}*", style="sans_bold") + escape_md_v2(" (vs. same days last week)"),
+            stylize(f"*{escape_md_v2('DEPOSITS +/- %')}*", style="sans_bold") + escape_md_v2(" (vs. same days last week)"),
             # escape_md_v2("DEPOSITS +/- % (vs. same days last week)"),
             f"`{dep_growth_table}`",
         ])
@@ -2247,10 +2247,10 @@ async def send_pmh_week(update: Update, df: pd.DataFrame, as_of_date: str):
             hdr_range,
             "",
             # escape_md_v2("WITHDRAWALS"),
-            stylize(f"*{escape_md_v2("WITHDRAWALS REPORT")}*", style="sans_bold"),
+            stylize(f"*{escape_md_v2('WITHDRAWALS REPORT')}*", style="sans_bold"),
             f"`{withdrawals_table}`",
             "",
-            stylize(f"*{escape_md_v2("WITHDRAWALS +/- %")}*", style="sans_bold") + escape_md_v2(" (vs. same days last week)"),
+            stylize(f"*{escape_md_v2('WITHDRAWALS +/- %')}*", style="sans_bold") + escape_md_v2(" (vs. same days last week)"),
             # escape_md_v2("WITHDRAWALS +/- % (vs. same days last week)"),
             f"`{wdr_growth_table}`",
         ])

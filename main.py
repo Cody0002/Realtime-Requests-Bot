@@ -1236,31 +1236,50 @@ class RealTimeBot:
 
             q0 = time.perf_counter()
             
-            # ALWAYS fetch all three
-            tasks = [
-                self.bq_client.execute_dpf_query(
-                    target_country=selected_country,
-                    selected_pgw=selected_pgw,
-                ),
-                self.bq_client.execute_dpf_yesterday_full_totals(
-                    target_country=selected_country,
-                    selected_pgw="DPP", # ALWAYS fetch DPP baseline
-                ),
-                self.bq_client.execute_dpf_query(
-                    target_country=selected_country,
-                    selected_pgw=None, # ALWAYS fetch full data
-                ),
-                self.bq_client.execute_dpf_query(
-                    target_country=selected_country,
-                    selected_pgw="DPP", # ALWAYS fetch DPP-only data for country summary block
-                ),
-            ]
-
-            results = await asyncio.gather(*tasks)
-            rows = results[0]
-            yesterday_full_rows = results[1]
-            full_dpf_rows = results[2]
-            dpp_dpf_rows = results[3]
+            # Query strategy (optimized):
+            # - We need FULL rows for summary growth.
+            # - We need DPP rows for optional DPP total block.
+            # - We need full-yesterday DPP baseline for estimate sentence.
+            # The old flow executed 4 queries and duplicated FULL rows when selected_pgw is None.
+            # This version executes 3 queries with no behavioral change.
+            if selected_pgw == "DPP":
+                results = await asyncio.gather(
+                    self.bq_client.execute_dpf_query(
+                        target_country=selected_country,
+                        selected_pgw="DPP",
+                    ),
+                    self.bq_client.execute_dpf_yesterday_full_totals(
+                        target_country=selected_country,
+                        selected_pgw="DPP",  # ALWAYS fetch DPP baseline
+                    ),
+                    self.bq_client.execute_dpf_query(
+                        target_country=selected_country,
+                        selected_pgw=None,  # ALWAYS fetch full data for growth summary
+                    ),
+                )
+                rows = results[0]
+                yesterday_full_rows = results[1]
+                full_dpf_rows = results[2]
+                dpp_dpf_rows = rows  # selected rows are already DPP rows
+            else:
+                results = await asyncio.gather(
+                    self.bq_client.execute_dpf_query(
+                        target_country=selected_country,
+                        selected_pgw=None,
+                    ),
+                    self.bq_client.execute_dpf_yesterday_full_totals(
+                        target_country=selected_country,
+                        selected_pgw="DPP",  # ALWAYS fetch DPP baseline
+                    ),
+                    self.bq_client.execute_dpf_query(
+                        target_country=selected_country,
+                        selected_pgw="DPP",  # DPP-only data for country summary block
+                    ),
+                )
+                rows = results[0]
+                yesterday_full_rows = results[1]
+                dpp_dpf_rows = results[2]
+                full_dpf_rows = rows  # selected rows are already FULL rows
             
             yesterday_full_totals = {
                 str(r.get("country") or "").upper(): float(r.get("full_yesterday_total") or 0)
