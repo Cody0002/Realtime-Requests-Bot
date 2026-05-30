@@ -20,7 +20,7 @@ country_now AS (
 source_realtime AS (
   SELECT
     f.orderRef                       AS dedup_key,
-    f.insertedAt                     AS ts,
+    f.completedAt                     AS ts,
     f.netAmount,
     UPPER(a.name)                    AS brand,
     UPPER(a.`group`)                 AS `group`,

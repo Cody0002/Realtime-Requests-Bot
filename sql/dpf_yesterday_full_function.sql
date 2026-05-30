@@ -19,7 +19,7 @@ country_now AS (
 source_realtime AS (
   SELECT
     f.orderRef AS dedup_key,
-    f.insertedAt AS ts,
+    f.completedAt AS ts,
     UPPER(LEFT(f.reqCurrency, 2)) AS country,
     CAST(f.netAmount AS FLOAT64) AS netAmount,
     CASE
