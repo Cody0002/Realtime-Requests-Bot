@@ -1,3 +1,8 @@
+-- Query parameters (bind these at runtime via the API / BigQuery console):
+--   @target_country : 2-letter country code (e.g. 'TH'), or NULL for all countries
+--   @selected_pgw   : PGW name prefix (e.g. 'dpp'), or NULL for all
+--                     'dpp' / 'dumpling' both match Dumpling-style methods
+
 WITH country_clock AS (
   SELECT 'TH' AS country, '+07:00' AS tz_offset UNION ALL
   SELECT 'PH' AS country, '+08:00' AS tz_offset UNION ALL
@@ -16,19 +21,21 @@ country_now AS (
   FROM country_clock
 ),
 
--- 1) Realtime source (primary)
+-- 1) Realtime source (primary).
+--    Dedup on the ORDER key (orderRef), not f.id (f.id is unique -> no-op).
 source_realtime AS (
   SELECT
     f.orderRef                       AS dedup_key,
-    f.completedAt                     AS ts,
+    f.completedAt                    AS ts,
     f.netAmount,
     UPPER(a.name)                    AS brand,
     UPPER(a.`group`)                 AS `group`,
     UPPER(LEFT(f.reqCurrency, 2))    AS country,
-    CASE 
+    CASE
       WHEN UPPER(f.method) LIKE '%DUMPLING%' OR UPPER(f.method) LIKE '%DPP%' THEN 'DPP'
       ELSE UPPER(f.method)
-    END                              AS method
+    END                              AS method,
+    'realtime'                       AS src
   FROM `kz-dp-prod.kz_pg_to_bq_realtime.ext_funding_tx` AS f
   LEFT JOIN `kz-dp-prod.kz_pg_to_bq_realtime.account` a
     ON f.accountId = a.id
@@ -42,28 +49,49 @@ source_realtime AS (
     )
     AND f.insertedAt >= TIMESTAMP_SUB(TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY)), INTERVAL 8 HOUR)
     AND f.insertedAt <  TIMESTAMP_ADD(TIMESTAMP(DATE_ADD(CURRENT_DATE(), INTERVAL 1 DAY)), INTERVAL 6 HOUR)
-  QUALIFY ROW_NUMBER() OVER (PARTITION BY f.id ORDER BY f.updatedAt DESC) = 1
+  QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY COALESCE(f.orderRef, CAST(f.id AS STRING))
+    ORDER BY f.updatedAt DESC
+  ) = 1
 ),
 
--- 2) Gold backfill: only rows missing from realtime
+-- Distinct realtime order keys for a clean anti-join (no fan-out).
+realtime_keys AS (
+  SELECT DISTINCT dedup_key
+  FROM source_realtime
+  WHERE dedup_key IS NOT NULL
+),
+
+-- One row per brand for the brand -> group lookup
+-- (account.name is not unique, so collapse first to avoid fan-out).
+account_group AS (
+  SELECT
+    UPPER(name)     AS brand,
+    UPPER(`group`)  AS `group`
+  FROM `kz-dp-prod.kz_pg_to_bq_realtime.account`
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY UPPER(name) ORDER BY id) = 1
+),
+
+-- 2) Gold backfill: only orders not present in realtime.
 source_gold_backfill AS (
   SELECT
-    d.order_id                                               AS dedup_key,
+    d.order_id                                    AS dedup_key,
     SAFE_CAST(d.datetime_of_deposit AS TIMESTAMP) AS ts,
-    CAST(d.deposit_amount AS FLOAT64)                                         AS netAmount,
-    UPPER(d.brand)                                           AS brand,
-    UPPER(a.`group`)                                         AS `group`,
-    UPPER(d.country)                                         AS country,
+    CAST(d.deposit_amount AS FLOAT64)             AS netAmount,
+    UPPER(d.brand)                                AS brand,
+    ag.`group`                                    AS `group`,
+    UPPER(d.country)                              AS country,
     CASE
       WHEN UPPER(d.payment_channel) LIKE '%DUMPLING%' OR UPPER(d.payment_channel) LIKE '%DPP%' THEN 'DPP'
       ELSE UPPER(d.payment_channel)
-    END                                                      AS method
+    END                                           AS method,
+    'gold'                                        AS src
   FROM `kz-dp-prod.crm_gold_prod.deposit_transaction_consolidated` d
-  LEFT JOIN source_realtime r
-    ON r.dedup_key = d.order_id
-  LEFT JOIN `kz-dp-prod.kz_pg_to_bq_realtime.account` a
-    ON UPPER(d.brand) = UPPER(a.name)
-  WHERE r.dedup_key IS NULL
+  LEFT JOIN account_group ag
+    ON ag.brand = UPPER(d.brand)
+  WHERE NOT EXISTS (
+      SELECT 1 FROM realtime_keys k WHERE k.dedup_key = d.order_id
+    )
     AND (@target_country IS NULL OR UPPER(d.country) = @target_country)
     AND (
       @selected_pgw IS NULL
@@ -78,17 +106,24 @@ source_gold_backfill AS (
   ) = 1
 ),
 
--- 3) Combine: realtime + only the missing rows from gold
+-- 3) Combine: realtime (1 row/order) + only the orders missing from realtime.
 combined AS (
   SELECT * FROM source_realtime
   UNION ALL
   SELECT * FROM source_gold_backfill
 ),
 
+-- Realtime ts is UTC -> convert to local; gold ts is already local -> use as-is.
 base AS (
   SELECT
-    DATE(DATETIME(c.ts, cn.tz_offset)) AS local_date,
-    TIME(DATETIME(c.ts, cn.tz_offset)) AS local_time,
+    CASE WHEN c.src = 'realtime'
+         THEN DATE(DATETIME(c.ts, cn.tz_offset))
+         ELSE DATE(c.ts)
+    END AS local_date,
+    CASE WHEN c.src = 'realtime'
+         THEN TIME(DATETIME(c.ts, cn.tz_offset))
+         ELSE TIME(c.ts)
+    END AS local_time,
     cn.today_date,
     cn.now_time,
     c.netAmount,
@@ -99,6 +134,7 @@ base AS (
   JOIN country_now cn
     ON cn.country = c.country
 ),
+
 capped AS (
   SELECT
     local_date AS date,
@@ -111,6 +147,7 @@ capped AS (
     AND local_time < now_time
     AND netAmount IS NOT NULL
 ),
+
 consolidated AS (
   SELECT
     date,
@@ -122,6 +159,7 @@ consolidated AS (
   FROM capped
   GROUP BY date, country, `group`, brand
 ),
+
 today_total AS (
   SELECT
     c.country,
