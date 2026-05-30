@@ -50,9 +50,9 @@ source_gold_backfill AS (
   SELECT
     d.order_id                                               AS dedup_key,
     SAFE_CAST(d.datetime_of_deposit AS TIMESTAMP) AS ts,
-    d.deposit_amount                                         AS netAmount,
+    CAST(d.deposit_amount AS FLOAT64)                                         AS netAmount,
     UPPER(d.brand)                                           AS brand,
-    UPPER(d.`group`)                                         AS `group`,
+    UPPER(a.`group`)                                         AS `group`,
     UPPER(d.country)                                         AS country,
     CASE
       WHEN UPPER(d.payment_channel) LIKE '%DUMPLING%' OR UPPER(d.payment_channel) LIKE '%DPP%' THEN 'DPP'
@@ -61,6 +61,8 @@ source_gold_backfill AS (
   FROM `kz-dp-prod.crm_gold_prod.deposit_transaction_consolidated` d
   LEFT JOIN source_realtime r
     ON r.dedup_key = d.order_id
+  LEFT JOIN `kz-dp-prod.kz_pg_to_bq_realtime.account` a
+    ON UPPER(d.brand) = UPPER(a.name)
   WHERE r.dedup_key IS NULL
     AND (@target_country IS NULL OR UPPER(d.country) = @target_country)
     AND (

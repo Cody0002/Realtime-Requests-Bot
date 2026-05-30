@@ -54,6 +54,7 @@ source_gold_backfill AS (
   FROM `kz-dp-prod.crm_gold_prod.deposit_transaction_consolidated` d
   LEFT JOIN source_realtime r
     ON r.dedup_key = d.order_id
+    
   WHERE r.dedup_key IS NULL
     AND (@target_country IS NULL OR UPPER(d.country) = @target_country)
     AND (
