@@ -42,6 +42,10 @@ source_realtime AS (
   WHERE f.type = 'deposit'
     AND f.status = 'completed'
     AND (@target_country IS NULL OR UPPER(LEFT(f.reqCurrency, 2)) = @target_country)
+    AND NOT (
+      LOWER(COALESCE(@selected_pgw, '')) IN ('dpp', 'dumpling')
+      AND UPPER(LEFT(f.reqCurrency, 2)) IN ('TH', 'PH')
+    )
     AND (
       @selected_pgw IS NULL
       OR LOWER(COALESCE(f.method, '')) LIKE CONCAT(LOWER(@selected_pgw), '%')
@@ -93,6 +97,10 @@ source_gold_backfill AS (
       SELECT 1 FROM realtime_keys k WHERE k.dedup_key = d.order_id
     )
     AND (@target_country IS NULL OR UPPER(d.country) = @target_country)
+    AND NOT (
+      LOWER(COALESCE(@selected_pgw, '')) IN ('dpp', 'dumpling')
+      AND UPPER(d.country) IN ('TH', 'PH')
+    )
     AND (
       @selected_pgw IS NULL
       OR LOWER(COALESCE(d.payment_channel, '')) LIKE CONCAT(LOWER(@selected_pgw), '%')
@@ -106,11 +114,98 @@ source_gold_backfill AS (
   ) = 1
 ),
 
+source_dpp_thph AS (
+  SELECT
+    CAST(NULL AS STRING)                          AS dedup_key,
+    SAFE_CAST(d.completed_datetime AS TIMESTAMP)  AS ts,
+    CAST(d.dep_amount AS FLOAT64)                 AS netAmount,
+    'DPP'                                         AS brand,
+    'DPP'                                         AS `group`,
+    'TH'                                          AS country,
+    'DPP'                                         AS method,
+    'dpp_gold'                                    AS src
+  FROM `kz-dp-prod.dpp_gold_prod.th_dpp_deposit_gold` d
+  WHERE d.status = 'success'
+    AND LOWER(COALESCE(@selected_pgw, '')) IN ('dpp', 'dumpling')
+    AND (@target_country IS NULL OR @target_country = 'TH')
+    AND SAFE_CAST(d.completed_datetime AS TIMESTAMP) >= TIMESTAMP_SUB(TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY)), INTERVAL 8 HOUR)
+    AND SAFE_CAST(d.completed_datetime AS TIMESTAMP) <  TIMESTAMP_ADD(TIMESTAMP(DATE_ADD(CURRENT_DATE(), INTERVAL 1 DAY)), INTERVAL 6 HOUR)
+
+  UNION ALL
+
+  SELECT
+    CAST(NULL AS STRING)                          AS dedup_key,
+    SAFE_CAST(d.completed_datetime AS TIMESTAMP)  AS ts,
+    CAST(d.dep_amount AS FLOAT64)                 AS netAmount,
+    'DPP'                                         AS brand,
+    'DPP'                                         AS `group`,
+    'PH'                                          AS country,
+    'DPP'                                         AS method,
+    'dpp_gold'                                    AS src
+  FROM `kz-dp-prod.dpp_gold_prod.ph_dpp_deposit_gold` d
+  WHERE d.status = 'success'
+    AND LOWER(COALESCE(@selected_pgw, '')) IN ('dpp', 'dumpling')
+    AND (@target_country IS NULL OR @target_country = 'PH')
+    AND SAFE_CAST(d.completed_datetime AS TIMESTAMP) >= TIMESTAMP_SUB(TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY)), INTERVAL 8 HOUR)
+    AND SAFE_CAST(d.completed_datetime AS TIMESTAMP) <  TIMESTAMP_ADD(TIMESTAMP(DATE_ADD(CURRENT_DATE(), INTERVAL 1 DAY)), INTERVAL 6 HOUR)
+),
+
+source_dpp_thph_realtime_missing AS (
+  SELECT
+    COALESCE(f.orderRef, CAST(f.id AS STRING))   AS dedup_key,
+    f.completedAt                                 AS ts,
+    CAST(f.netAmount AS FLOAT64)                  AS netAmount,
+    'DPP'                                         AS brand,
+    'DPP'                                         AS `group`,
+    UPPER(LEFT(f.reqCurrency, 2))                 AS country,
+    'DPP'                                         AS method,
+    'realtime'                                    AS src
+  FROM `kz-dp-prod.kz_pg_to_bq_realtime.ext_funding_tx` AS f
+  WHERE f.type = 'deposit'
+    AND f.status = 'completed'
+    AND LOWER(COALESCE(@selected_pgw, '')) IN ('dpp', 'dumpling')
+    AND UPPER(LEFT(f.reqCurrency, 2)) IN ('TH', 'PH')
+    AND (@target_country IS NULL OR UPPER(LEFT(f.reqCurrency, 2)) = @target_country)
+    AND (
+      LOWER(COALESCE(f.method, '')) LIKE CONCAT(LOWER(@selected_pgw), '%')
+      OR (LOWER(@selected_pgw) IN ('dpp', 'dumpling') AND (LOWER(COALESCE(f.method, '')) LIKE '%dumpling%' OR LOWER(COALESCE(f.method, '')) LIKE '%dpp%'))
+    )
+    AND (
+      (UPPER(LEFT(f.reqCurrency, 2)) = 'TH' AND NOT EXISTS (
+        SELECT 1
+        FROM `kz-dp-prod.dpp_gold_prod.th_dpp_deposit_gold` d
+        WHERE d.status = 'success'
+          AND UPPER(CAST(d.order_id AS STRING)) = UPPER(COALESCE(f.orderRef, CAST(f.id AS STRING)))
+          AND SAFE_CAST(d.completed_datetime AS TIMESTAMP) >= TIMESTAMP_SUB(TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY)), INTERVAL 8 HOUR)
+          AND SAFE_CAST(d.completed_datetime AS TIMESTAMP) <  TIMESTAMP_ADD(TIMESTAMP(DATE_ADD(CURRENT_DATE(), INTERVAL 1 DAY)), INTERVAL 6 HOUR)
+      ))
+      OR
+      (UPPER(LEFT(f.reqCurrency, 2)) = 'PH' AND NOT EXISTS (
+        SELECT 1
+        FROM `kz-dp-prod.dpp_gold_prod.ph_dpp_deposit_gold` d
+        WHERE d.status = 'success'
+          AND UPPER(CAST(d.order_id AS STRING)) = UPPER(COALESCE(f.orderRef, CAST(f.id AS STRING)))
+          AND SAFE_CAST(d.completed_datetime AS TIMESTAMP) >= TIMESTAMP_SUB(TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY)), INTERVAL 8 HOUR)
+          AND SAFE_CAST(d.completed_datetime AS TIMESTAMP) <  TIMESTAMP_ADD(TIMESTAMP(DATE_ADD(CURRENT_DATE(), INTERVAL 1 DAY)), INTERVAL 6 HOUR)
+      ))
+    )
+    AND f.insertedAt >= TIMESTAMP_SUB(TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 4 DAY)), INTERVAL 8 HOUR)
+    AND f.insertedAt <  TIMESTAMP_ADD(TIMESTAMP(DATE_ADD(CURRENT_DATE(), INTERVAL 1 DAY)), INTERVAL 6 HOUR)
+  QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY COALESCE(f.orderRef, CAST(f.id AS STRING))
+    ORDER BY f.updatedAt DESC
+  ) = 1
+),
+
 -- 3) Combine: realtime (1 row/order) + only the orders missing from realtime.
 combined AS (
   SELECT * FROM source_realtime
   UNION ALL
   SELECT * FROM source_gold_backfill
+  UNION ALL
+  SELECT * FROM source_dpp_thph
+  UNION ALL
+  SELECT * FROM source_dpp_thph_realtime_missing
 ),
 
 -- Realtime ts is UTC -> convert to local; gold ts is already local -> use as-is.

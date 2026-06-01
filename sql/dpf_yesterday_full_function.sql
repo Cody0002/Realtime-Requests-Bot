@@ -1,6 +1,7 @@
 -- Full completed deposits of LOCAL yesterday (per country), optionally filtered by PGW prefix.
--- Uses the same local-date basis as DPF (insertedAt converted by country timezone for realtime;
--- crm_gold timestamps are already in local time, so no conversion is applied to them).
+-- Uses the same local-date basis as DPF:
+-- realtime: insertedAt converted by country timezone
+-- gold: timestamps are already in local time, so no conversion is applied.
 --
 -- Query parameters (bind at runtime):
 --   @target_country : 2-letter country code (e.g. 'TH'), or NULL for all
@@ -15,6 +16,8 @@ WITH country_clock AS (
   SELECT 'CO' AS country, '-05:00' AS tz_offset UNION ALL
   SELECT 'MX' AS country, '-06:00' AS tz_offset
 ),
+
+-- 1. Determine Local "Today" for each country based on execution time
 country_now AS (
   SELECT
     country,
@@ -39,12 +42,16 @@ source_realtime AS (
     AND f.status = 'completed'
     AND f.netAmount IS NOT NULL
     AND (@target_country IS NULL OR UPPER(LEFT(f.reqCurrency, 2)) = @target_country)
+    AND NOT (
+      LOWER(COALESCE(@selected_pgw, '')) IN ('dpp', 'dumpling')
+      AND UPPER(LEFT(f.reqCurrency, 2)) IN ('TH', 'PH')
+    )
     AND (
       @selected_pgw IS NULL
       OR LOWER(COALESCE(f.method, '')) LIKE CONCAT(LOWER(@selected_pgw), '%')
       OR (LOWER(@selected_pgw) IN ('dpp', 'dumpling') AND (LOWER(COALESCE(f.method, '')) LIKE '%dumpling%' OR LOWER(COALESCE(f.method, '')) LIKE '%dpp%'))
     )
-    -- Scan range wide enough to cover yesterday across supported timezones (+8 to -6).
+    -- Wide scan range to cover timezone boundaries safely
     AND f.insertedAt >= TIMESTAMP_SUB(TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)), INTERVAL 8 HOUR)
     AND f.insertedAt <  TIMESTAMP_ADD(TIMESTAMP(CURRENT_DATE()), INTERVAL 6 HOUR)
   QUALIFY ROW_NUMBER() OVER (
@@ -76,11 +83,16 @@ source_gold_backfill AS (
       SELECT 1 FROM realtime_keys k WHERE k.dedup_key = d.order_id
     )
     AND (@target_country IS NULL OR UPPER(d.country) = @target_country)
+    AND NOT (
+      LOWER(COALESCE(@selected_pgw, '')) IN ('dpp', 'dumpling')
+      AND UPPER(d.country) IN ('TH', 'PH')
+    )
     AND (
       @selected_pgw IS NULL
       OR LOWER(COALESCE(d.payment_channel, '')) LIKE CONCAT(LOWER(@selected_pgw), '%')
       OR (LOWER(@selected_pgw) IN ('dpp', 'dumpling') AND (LOWER(COALESCE(d.payment_channel, '')) LIKE '%dumpling%' OR LOWER(COALESCE(d.payment_channel, '')) LIKE '%dpp%'))
     )
+    -- Wide scan range matching realtime
     AND SAFE_CAST(d.datetime_of_deposit AS TIMESTAMP) >= TIMESTAMP_SUB(TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)), INTERVAL 8 HOUR)
     AND SAFE_CAST(d.datetime_of_deposit AS TIMESTAMP) <  TIMESTAMP_ADD(TIMESTAMP(CURRENT_DATE()), INTERVAL 6 HOUR)
   QUALIFY ROW_NUMBER() OVER (
@@ -89,19 +101,104 @@ source_gold_backfill AS (
   ) = 1
 ),
 
+source_dpp_thph AS (
+  SELECT
+    CAST(NULL AS STRING)                          AS dedup_key,
+    SAFE_CAST(d.completed_datetime AS TIMESTAMP)  AS ts,
+    'TH'                                          AS country,
+    CAST(d.dep_amount AS FLOAT64)                 AS netAmount,
+    'DPP'                                         AS method,
+    'dpp_gold'                                    AS src
+  FROM `kz-dp-prod.dpp_gold_prod.th_dpp_deposit_gold` d
+  WHERE d.status = 'success'
+    AND LOWER(COALESCE(@selected_pgw, '')) IN ('dpp', 'dumpling')
+    AND (@target_country IS NULL OR @target_country = 'TH')
+    AND SAFE_CAST(d.completed_datetime AS TIMESTAMP) >= TIMESTAMP_SUB(TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)), INTERVAL 8 HOUR)
+    AND SAFE_CAST(d.completed_datetime AS TIMESTAMP) <  TIMESTAMP_ADD(TIMESTAMP(CURRENT_DATE()), INTERVAL 6 HOUR)
+
+  UNION ALL
+
+  SELECT
+    CAST(NULL AS STRING)                          AS dedup_key,
+    SAFE_CAST(d.completed_datetime AS TIMESTAMP)  AS ts,
+    'PH'                                          AS country,
+    CAST(d.dep_amount AS FLOAT64)                 AS netAmount,
+    'DPP'                                         AS method,
+    'dpp_gold'                                    AS src
+  FROM `kz-dp-prod.dpp_gold_prod.ph_dpp_deposit_gold` d
+  WHERE d.status = 'success'
+    AND LOWER(COALESCE(@selected_pgw, '')) IN ('dpp', 'dumpling')
+    AND (@target_country IS NULL OR @target_country = 'PH')
+    AND SAFE_CAST(d.completed_datetime AS TIMESTAMP) >= TIMESTAMP_SUB(TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)), INTERVAL 8 HOUR)
+    AND SAFE_CAST(d.completed_datetime AS TIMESTAMP) <  TIMESTAMP_ADD(TIMESTAMP(CURRENT_DATE()), INTERVAL 6 HOUR)
+),
+
+source_dpp_thph_realtime_missing AS (
+  SELECT
+    COALESCE(f.orderRef, CAST(f.id AS STRING))   AS dedup_key,
+    f.completedAt                                 AS ts,
+    UPPER(LEFT(f.reqCurrency, 2))                 AS country,
+    CAST(f.netAmount AS FLOAT64)                  AS netAmount,
+    'DPP'                                         AS method,
+    'realtime'                                    AS src
+  FROM `kz-dp-prod.kz_pg_to_bq_realtime.ext_funding_tx` AS f
+  WHERE f.type = 'deposit'
+    AND f.status = 'completed'
+    AND f.netAmount IS NOT NULL
+    AND LOWER(COALESCE(@selected_pgw, '')) IN ('dpp', 'dumpling')
+    AND UPPER(LEFT(f.reqCurrency, 2)) IN ('TH', 'PH')
+    AND (@target_country IS NULL OR UPPER(LEFT(f.reqCurrency, 2)) = @target_country)
+    AND (
+      LOWER(COALESCE(f.method, '')) LIKE CONCAT(LOWER(@selected_pgw), '%')
+      OR (LOWER(@selected_pgw) IN ('dpp', 'dumpling') AND (LOWER(COALESCE(f.method, '')) LIKE '%dumpling%' OR LOWER(COALESCE(f.method, '')) LIKE '%dpp%'))
+    )
+    AND (
+      (UPPER(LEFT(f.reqCurrency, 2)) = 'TH' AND NOT EXISTS (
+        SELECT 1
+        FROM `kz-dp-prod.dpp_gold_prod.th_dpp_deposit_gold` d
+        WHERE d.status = 'success'
+          AND UPPER(CAST(d.order_id AS STRING)) = UPPER(COALESCE(f.orderRef, CAST(f.id AS STRING)))
+          AND SAFE_CAST(d.completed_datetime AS TIMESTAMP) >= TIMESTAMP_SUB(TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)), INTERVAL 8 HOUR)
+          AND SAFE_CAST(d.completed_datetime AS TIMESTAMP) <  TIMESTAMP_ADD(TIMESTAMP(CURRENT_DATE()), INTERVAL 6 HOUR)
+      ))
+      OR
+      (UPPER(LEFT(f.reqCurrency, 2)) = 'PH' AND NOT EXISTS (
+        SELECT 1
+        FROM `kz-dp-prod.dpp_gold_prod.ph_dpp_deposit_gold` d
+        WHERE d.status = 'success'
+          AND UPPER(CAST(d.order_id AS STRING)) = UPPER(COALESCE(f.orderRef, CAST(f.id AS STRING)))
+          AND SAFE_CAST(d.completed_datetime AS TIMESTAMP) >= TIMESTAMP_SUB(TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)), INTERVAL 8 HOUR)
+          AND SAFE_CAST(d.completed_datetime AS TIMESTAMP) <  TIMESTAMP_ADD(TIMESTAMP(CURRENT_DATE()), INTERVAL 6 HOUR)
+      ))
+    )
+    AND f.insertedAt >= TIMESTAMP_SUB(TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)), INTERVAL 8 HOUR)
+    AND f.insertedAt <  TIMESTAMP_ADD(TIMESTAMP(CURRENT_DATE()), INTERVAL 6 HOUR)
+  QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY COALESCE(f.orderRef, CAST(f.id AS STRING))
+    ORDER BY f.updatedAt DESC
+  ) = 1
+),
+
 combined AS (
   SELECT * FROM source_realtime
   UNION ALL
   SELECT * FROM source_gold_backfill
+  UNION ALL
+  SELECT * FROM source_dpp_thph
+  UNION ALL
+  SELECT * FROM source_dpp_thph_realtime_missing
 ),
 
--- Realtime ts is UTC -> convert to local; gold ts is already local -> use as-is.
+-- 2. Apply Timezone logic per your strict requirements
 base AS (
   SELECT
     cn.country,
-    CASE WHEN c.src = 'realtime'
-         THEN DATE(DATETIME(c.ts, cn.tz_offset))
-         ELSE DATE(c.ts)
+    CASE 
+      -- UTC to Local conversion using the specific country offset
+      WHEN c.src = 'realtime' THEN DATE(DATETIME(c.ts, cn.tz_offset))
+      
+      -- Gold is already local. DATE() extracts the wall-clock day directly without timezone shifting.
+      ELSE DATE(c.ts)
     END AS local_date,
     c.netAmount
   FROM combined c
@@ -118,6 +215,7 @@ agg AS (
   GROUP BY country, local_date
 )
 
+-- 3. Filter exactly for local yesterday
 SELECT
   n.country,
   DATE_SUB(n.today_date, INTERVAL 1 DAY) AS yesterday_date,
