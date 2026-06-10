@@ -26,7 +26,7 @@ country_now AS (
 source_realtime AS (
   SELECT
     f.orderRef                       AS dedup_key,
-    f.completedAt                    AS ts,
+    f.createdAt                    AS ts,
     f.netAmount,
     UPPER(a.name)                    AS brand,
     UPPER(a.`group`)                 AS `group`,
@@ -153,7 +153,7 @@ source_dpp_thph AS (
 source_dpp_thph_realtime_missing AS (
   SELECT
     COALESCE(f.orderRef, CAST(f.id AS STRING))   AS dedup_key,
-    f.completedAt                                 AS ts,
+    f.createdAt                                 AS ts,
     CAST(f.netAmount AS FLOAT64)                  AS netAmount,
     'DPP'                                         AS brand,
     'DPP'                                         AS `group`,
