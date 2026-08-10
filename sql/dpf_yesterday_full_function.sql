@@ -109,8 +109,8 @@ source_dpp_thph AS (
     CAST(d.dep_amount AS FLOAT64)                 AS netAmount,
     'DPP'                                         AS method,
     'dpp_gold'                                    AS src
-  FROM `kz-dp-prod.dpp_gold_prod.th_dpp_deposit_gold` d
-  WHERE d.status = 'success'
+  FROM `kz-dp-prod.dpp_gold_prod.th_dpp_deposit_v2_gold` d
+  WHERE UPPER(d.status) IN ('COMPLETED','COMPLETED_BY_ADMIN','SUCCESS')
     AND LOWER(COALESCE(@selected_pgw, '')) IN ('dpp', 'dumpling')
     AND (@target_country IS NULL OR @target_country = 'TH')
     AND SAFE_CAST(d.completed_datetime AS TIMESTAMP) >= TIMESTAMP_SUB(TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)), INTERVAL 8 HOUR)
@@ -125,8 +125,8 @@ source_dpp_thph AS (
     CAST(d.dep_amount AS FLOAT64)                 AS netAmount,
     'DPP'                                         AS method,
     'dpp_gold'                                    AS src
-  FROM `kz-dp-prod.dpp_gold_prod.ph_dpp_deposit_gold` d
-  WHERE d.status = 'success'
+  FROM `kz-dp-prod.dpp_gold_prod.ph_dpp_deposit_v2_gold` d
+  WHERE UPPER(d.status) IN ('COMPLETED','COMPLETED_BY_ADMIN','SUCCESS')
     AND LOWER(COALESCE(@selected_pgw, '')) IN ('dpp', 'dumpling')
     AND (@target_country IS NULL OR @target_country = 'PH')
     AND SAFE_CAST(d.completed_datetime AS TIMESTAMP) >= TIMESTAMP_SUB(TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)), INTERVAL 8 HOUR)
@@ -155,8 +155,8 @@ source_dpp_thph_realtime_missing AS (
     AND (
       (UPPER(LEFT(f.reqCurrency, 2)) = 'TH' AND NOT EXISTS (
         SELECT 1
-        FROM `kz-dp-prod.dpp_gold_prod.th_dpp_deposit_gold` d
-        WHERE d.status = 'success'
+        FROM `kz-dp-prod.dpp_gold_prod.th_dpp_deposit_v2_gold` d
+        WHERE UPPER(d.status) IN ('COMPLETED','COMPLETED_BY_ADMIN','SUCCESS')
           AND UPPER(CAST(d.order_id AS STRING)) = UPPER(COALESCE(f.orderRef, CAST(f.id AS STRING)))
           AND SAFE_CAST(d.completed_datetime AS TIMESTAMP) >= TIMESTAMP_SUB(TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)), INTERVAL 8 HOUR)
           AND SAFE_CAST(d.completed_datetime AS TIMESTAMP) <  TIMESTAMP_ADD(TIMESTAMP(CURRENT_DATE()), INTERVAL 6 HOUR)
@@ -164,8 +164,8 @@ source_dpp_thph_realtime_missing AS (
       OR
       (UPPER(LEFT(f.reqCurrency, 2)) = 'PH' AND NOT EXISTS (
         SELECT 1
-        FROM `kz-dp-prod.dpp_gold_prod.ph_dpp_deposit_gold` d
-        WHERE d.status = 'success'
+        FROM `kz-dp-prod.dpp_gold_prod.ph_dpp_deposit_v2_gold` d
+        WHERE UPPER(d.status) IN ('COMPLETED','COMPLETED_BY_ADMIN','SUCCESS')
           AND UPPER(CAST(d.order_id AS STRING)) = UPPER(COALESCE(f.orderRef, CAST(f.id AS STRING)))
           AND SAFE_CAST(d.completed_datetime AS TIMESTAMP) >= TIMESTAMP_SUB(TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)), INTERVAL 8 HOUR)
           AND SAFE_CAST(d.completed_datetime AS TIMESTAMP) <  TIMESTAMP_ADD(TIMESTAMP(CURRENT_DATE()), INTERVAL 6 HOUR)
