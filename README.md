@@ -44,9 +44,16 @@ The Real-Time Data Analytics Bot is a comprehensive Telegram bot designed for bu
 │   ├── table_renderer.py    # Data visualization & table formatting
 │   └── helpers.py           # Utility functions
 ├── sql/
-│   ├── apf_function.sql     # Acquisition Performance query
-│   ├── dpf_function.sql     # Deposit Performance query
-│   └── dist_function.sql    # Distribution query
+│   ├── apf_function.sql                 # Acquisition Performance (Kura)
+│   ├── dpf_function.sql                 # Deposit Performance (Kura)
+│   ├── dpf_yesterday_full_function.sql  # Full local-yesterday totals for DPP estimate (Kura)
+│   ├── dist_function.sql                # Channel distribution (Kura)
+│   ├── pmh_function.sql                 # Payment health, single day (Kura)
+│   ├── pmh_week_function.sql            # Payment health, week vs last week (Kura)
+│   ├── usage_function.sql               # /usage: bot's own BigQuery job history
+│   └── brand_mapping.csv                # brand -> group_name for /pmh_*
+├── scripts/
+│   └── dry_run_sql.py       # Validate every query against BigQuery (run on the server)
 ├── logs/                    # Runtime logs and user data
 │   ├── registered_users.json
 │   ├── invite_tokens.json
@@ -164,6 +171,17 @@ Key Advantage: Pattern 2 allows instant access management - admins can control w
 
 ### BigQuery Integration
 
+All queries read the **Kura** data warehouse (see `UPDATE_29Sep26.md`):
+
+| Purpose | Table | Notes |
+|---|---|---|
+| Deposits / withdrawals | `kz-kura.prod_dw.fundingTx` | Raw landing of the app table, ~50 days retention, deduplicated on `id`, `deletedAt IS NULL` |
+| Registrations (`/apf`) | `kz-kura.prod_dw.member` | Raw landing of the app `member` table |
+| Brand dimension | `kz-kura.int_dw.brand_account` | `account_id` → brand, groupName, country, tz (drives every local-time window) |
+
+The data lives in project `kz-kura` (location **US**); jobs run in the job project
+`kz-dp-ops` because the bot identity has no `jobs.create` on `kz-kura`.
+
 The bot connects to Google BigQuery for data retrieval:
 
 ```python
@@ -202,7 +220,8 @@ Brands are normalized using these rules:
 ```bash
 # Required
 TELEGRAM_BOT_TOKEN=your_bot_token
-BQ_PROJECT=your_bigquery_project
+BQ_PROJECT=kz-dp-ops          # job project the queries run in
+BQ_LOCATION=US                # Kura datasets live in US
 REGISTER_LINK_SECRET=secure_random_string
 
 # Optional
@@ -211,10 +230,14 @@ ADMIN_USER_IDS=123456789,987654321
 
 ### Supported Countries
 - **TH**: Thailand (THB)
-- **PH**: Philippines (PHP) 
+- **PH**: Philippines (PHP)
 - **BD**: Bangladesh (BDT)
 - **PK**: Pakistan (PKR)
-- **ID**: Indonesia (IDR)
+- **BR**: Brazil (BRL)
+- **MX**: Mexico (MXN)
+- **CO**: Colombia (COP)
+
+Each country is reported on its own local clock (timezone from Kura `brand_account.tz`).
 
 ## Data Visualization
 
@@ -294,7 +317,9 @@ Persistent storage for:
 ```bash
 pip install -r requirements.txt
 export TELEGRAM_BOT_TOKEN="your_token"
-export BQ_PROJECT="your_project"
+export BQ_PROJECT="kz-dp-ops"
+export BQ_LOCATION="US"
+python scripts/dry_run_sql.py   # validate every query with the server credentials
 ```
 
 ### Production Considerations

@@ -1,12 +1,19 @@
 # bq_client.py
+#
+# BigQuery access for the bot. All SQL under sql/ reads the Kura data warehouse:
+#   data project  kz-kura   (datasets prod_dw / int_dw, location US)
+#   job project   kz-dp-ops (config.BQ_PROJECT; the bot identity has no jobs.create on kz-kura)
+# Every query keeps the same parameters / output columns the renderers expect.
 from google.cloud import bigquery
 import logging
 import pandas as pd
 import re
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
-# directory = "//home//ubuntu//sql"
-directory = ".//sql"
+# sql/ lives next to bot/ — resolve it from this file so the bot works from any cwd.
+_base_dir = Path(__file__).resolve().parents[1]
+directory = str(_base_dir / "sql")
 class BigQueryClient:
     def __init__(self, config):
         self.config = config
@@ -17,7 +24,7 @@ class BigQueryClient:
         )
                 # ▼▼▼ NEW: LOAD BRAND MAPPING CSV AT STARTUP ▼▼▼
         try:
-            mapping_path = f"{directory}//brand_mapping.csv"
+            mapping_path = f"{directory}/brand_mapping.csv"
             self.brand_mapping_df = pd.read_csv(mapping_path)
             # Ensure the 'brand' column is lowercase for consistent joining
             self.brand_mapping_df['brand'] = self.brand_mapping_df['brand'].str.upper()
@@ -31,7 +38,7 @@ class BigQueryClient:
         cached = self._sql_cache.get(filename)
         if cached is not None:
             return cached
-        path = f"{directory}//{filename}"
+        path = f"{directory}/{filename}"
         with open(path, "r", encoding="utf-8") as f:
             sql = f.read()
         self._sql_cache[filename] = sql
@@ -61,7 +68,8 @@ class BigQueryClient:
         selected_pgw: str | None = None,
     ):
         """
-        Distribution (channels by country) for an EXACT local date (Asia/Bangkok).
+        Distribution (channels by country) for an EXACT local date.
+        Local date is computed per brand from Kura brand_account.tz.
         Params:
         - target_date: 'YYYY-MM-DD'
         - selected_country: STRING or None
@@ -90,10 +98,10 @@ class BigQueryClient:
         selected_pgw: str | None = None,
     ):
         """
-        Deposit Performance (DPF): last 3 local days.
-        Current local day is capped at local "now"; previous days are full-day totals.
-        Optional filter by country (TH/PH/BD/PK/ID) when target_country is provided.
-        Optional filter by PGW method prefix (e.g., DPP).
+        Deposit Performance (DPF): last 3 local days (Kura prod_dw.fundingTx).
+        Every day is capped at the brand's local "now" so the 3 days compare like-for-like.
+        Optional filter by country (TH/PH/BD/PK/BR/MX/CO) when target_country is provided.
+        Optional filter by PGW method prefix (e.g., DPP -> method/providerKey matching dpp|dumpling).
         """
         sql = self._load_sql("dpf_function.sql")
 
@@ -117,7 +125,7 @@ class BigQueryClient:
         selected_pgw: str | None = None,
     ):
         """
-        Returns full completed deposit totals of local yesterday by country.
+        Returns full completed deposit totals of local yesterday by country (Kura).
         This is used as baseline for DPP estimation sentences.
         """
         sql = self._load_sql("dpf_yesterday_full_function.sql")
@@ -150,8 +158,9 @@ class BigQueryClient:
         if not re.fullmatch(r"[A-Za-z0-9_-]+", str(self.config.BQ_LOCATION or "")):
             raise ValueError("Invalid BQ_LOCATION format")
 
+        # INFORMATION_SCHEMA region qualifiers are lowercase (e.g. `region-us`).
         sql = sql.replace("__PROJECT_ID__", self.config.BQ_PROJECT)
-        sql = sql.replace("__BQ_LOCATION__", self.config.BQ_LOCATION)
+        sql = sql.replace("__BQ_LOCATION__", self.config.BQ_LOCATION.lower())
 
         try:
             query_job = self.client.query(sql)

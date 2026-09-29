@@ -1,60 +1,120 @@
--- pmh_week_function.sql
+-- =====================================================================
+-- PMH WEEK (Mon -> as-of day, vs same span last week) — KURA VERSION
+-- =====================================================================
+-- Drop-in replacement for the kz-dp-prod pmh_week_function.sql. Same params,
+-- same output columns (brand -> group_name mapping stays in Python).
+--
+--   Data project : kz-kura           (location US)
+--   Job project  : kz-dp-ops
+--   Realtime     : kz-kura.prod_dw.fundingTx
+--   Brand dim    : kz-kura.int_dw.brand_account
+--
 -- Params:
---   @as_of_date DATE          -- typically the YYYY-MM-DD you pass with the command
---   @selected_country STRING   -- e.g. 'TH' (nullable = all)
+--   @as_of_date       DATE    the YYYY-MM-DD passed with the command
+--   @selected_country STRING  2-letter country code, or NULL for all
+--
+-- ⚠ RETENTION: prod_dw.fundingTx keeps roughly the last 50 days, so an
+-- as-of date older than ~5 weeks returns no rows.
+--
+-- What changed vs the kz-dp-prod version:
+--   * source       : ext_funding_tx + account -> prod_dw.fundingTx + int_dw.brand_account
+--   * brand        : brand_account.brand (UPPER) instead of account.name
+--   * country / tz : brand_account (fallback: LEFT(reqCurrency,2) + IANA list)
+--   * scan window  : the old query scanned the whole table; now bounded to
+--                    [prev_start - 1d, as_of + 2d] on createdAt with an insertedAt
+--                    lower bound for partition pruning
+--   * soft deletes : deletedAt IS NULL
+--   * dedup        : QUALIFY on id, newest updatedAt wins
+--
+-- Output: period, tnx_type, providerKey, method, brand, status, country,
+--         avg_diff_seconds_transaction, total_count,
+--         transaction_within_180s, transaction_within_300s, transaction_within_900s
+-- =====================================================================
 
-DECLARE tz STRING DEFAULT 'Asia/Bangkok';
-
-WITH bounds AS (
+WITH
+bounds AS (
   SELECT
-    DATE_TRUNC(@as_of_date, WEEK(MONDAY))                   AS cur_start,
-    @as_of_date                                             AS cur_end,
-    DATE_SUB(DATE_TRUNC(@as_of_date, WEEK(MONDAY)), INTERVAL 7 DAY) AS prev_start,
-    DATE_SUB(@as_of_date, INTERVAL 7 DAY)                   AS prev_end
+    DATE_TRUNC(@as_of_date, WEEK(MONDAY))                            AS cur_start,
+    @as_of_date                                                      AS cur_end,
+    DATE_SUB(DATE_TRUNC(@as_of_date, WEEK(MONDAY)), INTERVAL 7 DAY)  AS prev_start,
+    DATE_SUB(@as_of_date, INTERVAL 7 DAY)                            AS prev_end
 ),
 
-base AS (
+scan AS (
   SELECT
+    TIMESTAMP_SUB(TIMESTAMP(b.prev_start), INTERVAL 1 DAY) AS lo,
+    TIMESTAMP_ADD(TIMESTAMP(b.cur_end),    INTERVAL 2 DAY) AS hi
+  FROM bounds b
+),
+
+tz_fallback AS (
+  SELECT country, tz
+  FROM UNNEST([
+    STRUCT('TH' AS country, 'Asia/Bangkok' AS tz),
+    STRUCT('PH' AS country, 'Asia/Manila' AS tz),
+    STRUCT('ID' AS country, 'Asia/Jakarta' AS tz),
+    STRUCT('PK' AS country, 'Asia/Karachi' AS tz),
+    STRUCT('BD' AS country, 'Asia/Dhaka' AS tz),
+    STRUCT('BR' AS country, 'America/Sao_Paulo' AS tz),
+    STRUCT('MX' AS country, 'America/Mexico_City' AS tz),
+    STRUCT('IN' AS country, 'Asia/Kolkata' AS tz),
+    STRUCT('CO' AS country, 'America/Bogota' AS tz),
+    STRUCT('EG' AS country, 'Africa/Cairo' AS tz),
+    STRUCT('PE' AS country, 'America/Lima' AS tz)
+  ])
+),
+
+tx AS (
+  SELECT
+    f.id,
     f.type,
-    LEFT(f.reqCurrency, 2) AS country,
+    f.status,
+    f.accountId,
+    f.reqCurrency,
     f.createdAt,
     f.completedAt,
     f.providerKey,
     f.method,
-    a.name AS brand_name,
-    CASE
-      WHEN f.status = 'errors' THEN 'error'
-    ELSE f.status END AS status,
-    f.netAmount,
-    -- DATE(DATETIME(COALESCE(f.completedAt, f.createdAt), tz)) AS local_date
-    DATE(DATETIME(f.createdAt, CASE WHEN f.reqCurrency = 'BDT' THEN '+06:00' -- UTC+6
-        WHEN f.reqCurrency = 'PKR' THEN '+05:00' -- UTC+5
-        WHEN f.reqCurrency = 'PHP' THEN '+08:00' -- UTC+8
-        WHEN f.reqCurrency = 'THB' THEN '+07:00' -- UTC+7
-        WHEN f.reqCurrency = 'BRL' THEN '-03:00' -- (America/Sao_Paulo is UTC-3)
-        WHEN f.reqCurrency = 'COP' THEN '-05:00' -- UTC-5
-        WHEN LEFT(f.reqCurrency, 2) = 'MX' THEN '-06:00' -- UTC-6
-        -- WHEN f.reqCurrency = 'IDR' THEN '+07:00' -- (Asia/Jakarta is UTC+7)
-        ELSE NULL END)) AS local_date
-  FROM `kz-dp-prod.kz_pg_to_bq_realtime.ext_funding_tx` AS f
-  LEFT JOIN `kz-dp-prod.kz_pg_to_bq_realtime.account`      AS a ON f.accountId = a.id
-  WHERE f.type IN ('deposit','withdraw')
-    AND f.status IN ('completed','error','timeout', 'errors')
-    AND (@selected_country IS NULL OR
-         (LEFT(f.reqCurrency, 2) ) = @selected_country)
+    f.netAmount
+  FROM `kz-kura.prod_dw.fundingTx` AS f
+  CROSS JOIN scan s
+  WHERE f.type   IN ('deposit', 'withdraw')
+    AND f.status IN ('completed', 'error', 'timeout', 'errors')
+    AND f.deletedAt IS NULL
+    AND f.insertedAt >= s.lo                        -- partition lower bound only
+    AND f.createdAt  >= s.lo AND f.createdAt < s.hi -- business time
   QUALIFY ROW_NUMBER() OVER (PARTITION BY f.id ORDER BY f.updatedAt DESC) = 1
 ),
 
-cur AS (
+base AS (
   SELECT
-    'CUR' AS period, b.*
+    t.type,
+    COALESCE(UPPER(ba.country), UPPER(LEFT(t.reqCurrency, 2)))   AS country,
+    t.createdAt,
+    t.completedAt,
+    t.providerKey,
+    t.method,
+    UPPER(ba.brand)                                               AS brand_name,
+    CASE WHEN t.status = 'errors' THEN 'error' ELSE t.status END  AS status,
+    t.netAmount,
+    DATE(DATETIME(t.createdAt, COALESCE(ba.tz, tzf.tz, 'Asia/Bangkok'))) AS local_date
+  FROM tx t
+  LEFT JOIN `kz-kura.int_dw.brand_account` ba
+    ON ba.account_id = t.accountId
+  LEFT JOIN tz_fallback tzf
+    ON tzf.country = UPPER(LEFT(t.reqCurrency, 2))
+  WHERE @selected_country IS NULL
+     OR COALESCE(UPPER(ba.country), UPPER(LEFT(t.reqCurrency, 2))) = @selected_country
+),
+
+cur AS (
+  SELECT 'CUR' AS period, b.*
   FROM base b, bounds d
   WHERE b.local_date BETWEEN d.cur_start AND d.cur_end
 ),
 
 prev AS (
-  SELECT
-    'PREV' AS period, b.*
+  SELECT 'PREV' AS period, b.*
   FROM base b, bounds d
   WHERE b.local_date BETWEEN d.prev_start AND d.prev_end
 ),
@@ -67,19 +127,19 @@ all_tx AS (
 
 SELECT
   period,
-  CASE WHEN type='deposit' THEN 'DEPOSIT'
-       WHEN type='withdraw' THEN 'WITHDRAWAL'
+  CASE WHEN type = 'deposit'  THEN 'DEPOSIT'
+       WHEN type = 'withdraw' THEN 'WITHDRAWAL'
   END AS tnx_type,
   providerKey,
   method,
   brand_name AS brand,
   status,
   country,
-  AVG(TIMESTAMP_DIFF(completedAt, createdAt, SECOND)) AS avg_diff_seconds_transaction,
-  COUNT(*) AS total_count,
-  COUNTIF(TIMESTAMP_DIFF(completedAt, createdAt, SECOND) < 180) AS transaction_within_180s,
-  COUNTIF(TIMESTAMP_DIFF(completedAt, createdAt, SECOND) < 300) AS transaction_within_300s,
-  COUNTIF(TIMESTAMP_DIFF(completedAt, createdAt, SECOND) < 900) AS transaction_within_900s
+  AVG(TIMESTAMP_DIFF(completedAt, createdAt, SECOND))            AS avg_diff_seconds_transaction,
+  COUNT(*)                                                       AS total_count,
+  COUNTIF(TIMESTAMP_DIFF(completedAt, createdAt, SECOND) < 180)  AS transaction_within_180s,
+  COUNTIF(TIMESTAMP_DIFF(completedAt, createdAt, SECOND) < 300)  AS transaction_within_300s,
+  COUNTIF(TIMESTAMP_DIFF(completedAt, createdAt, SECOND) < 900)  AS transaction_within_900s
 FROM all_tx
 GROUP BY period, tnx_type, providerKey, method, brand, status, country
 ORDER BY period, country, brand;
