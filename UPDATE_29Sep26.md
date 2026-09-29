@@ -74,6 +74,20 @@ python scripts/dry_run_sql.py --execute
   `bigquery.jobs.list` on `kz-dp-ops`. `/usage` is a hidden admin command, so the dry-run
   script reports it as a WARN and it does not block the deploy.
 
+## Fix: /dpf and /apf showed every brand under one group
+- The group comes from Kura `int_dw.brand_account.groupName`, which is formatted differently
+  from the old `account.group`. The bot's old string replacements only knew `PH96G1`, `PHBLG`,
+  `PHK`, `IDK`, `PKK`, so everything else became `KZO`.
+- `bot/group_mapping.py` now parses the label the same way the Lark bot does
+  (`extract_sub_group` / `normalize_brand` in its `app.py`): strip the country prefix and
+  separators, find `96G` / `BLG` / `WDB` / `KZG`, drop the sub-group number. Result:
+  `BLG`, `WDB`, `96G`, `KZO`. No CSV is involved.
+- Labels that still cannot be parsed are logged once per command
+  (`not recognised, shown under KZO`) so they show up in `journalctl`.
+- Check on the server before restarting:
+  `python scripts/show_group_mapping.py TH` prints every TH brand with its raw `groupName`
+  and the group the bot will show.
+
 ## Smoke test in Telegram after restart
 - `/dpf a`, `/dpf BD`, `/dpf dpp BD`, `/dpf dpp TH`
 - `/dist a <today YYYYMMDD>`, `/dist dpp PH <today>`

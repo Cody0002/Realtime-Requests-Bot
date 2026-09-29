@@ -10,6 +10,7 @@ from pathlib import Path
 
 from bot.config import Config
 from bot.bq_client import BigQueryClient
+from bot.group_mapping import resolve_group
 from bot.table_renderer import send_apf_tables, send_channel_distribution, send_dpf_tables, send_pmh_total, send_pmh_week, generate_dpp_estimate_message
 
 from bot.table_renderer import (send_provider_summaries, send_method_summaries
@@ -134,6 +135,20 @@ class RealTimeBot:
         logger.info("registered_file path: %s", self.registered_file.resolve())
         logger.info("invite_tokens path:   %s", self.tokens_file.resolve())
         self._run_log_retention_if_needed(force=True)
+
+    def _assign_report_groups(self, rows: list[dict], command: str) -> None:
+        """Set row["group"] to 96G / BLG / WDB / KZO from the Kura groupName (bot/group_mapping.py)."""
+        unrecognised: set[tuple[str, str]] = set()
+        for r in rows:
+            group, recognised = resolve_group(r.get("country"), r.get("group"))
+            if not recognised and str(r.get("group")).upper() != "DPP":
+                unrecognised.add((str(r.get("country")), str(r.get("group"))))
+            r["group"] = group
+        if unrecognised:
+            logger.info(
+                "%s: %s (country, groupName) not recognised, shown under KZO: %s",
+                command, len(unrecognised), sorted(unrecognised)[:40],
+            )
 
     def _cleanup_old_event_logs(self):
         """
@@ -885,12 +900,6 @@ class RealTimeBot:
 
 
     async def apf_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        def normalize_brand(b):
-            KEEP_BRANDS = {"96G", "BLG", "WDB"}
-            s = "" if b is None else str(b).strip()
-            s = s.rstrip("12").upper()      # optional: drop trailing 1/2, normalize case
-            return s if s in KEEP_BRANDS else "KZO"
-        
         if not await self._ensure_allowed(update, "apf"):
             return
 
@@ -917,14 +926,9 @@ class RealTimeBot:
             if not rows:
                 return await update.effective_chat.send_message(f"No data for {scope_label}.")
 
+            self._assign_report_groups(rows, "/apf")
             country_groups = {}
             for row in rows:
-                row["group"] = str(row["group"]).replace("PH96G1", "96G1")\
-                        .replace("PHBLG", "BLG")\
-                        .replace("1", "").replace("2", "")\
-                        .replace("KZG", "KZO").replace("PHK", "KZO").replace("IDK", "KZO").replace("PKK", "KZO")
-                
-                row["group"] = normalize_brand(row["group"])
                 country = row.get("country", "Unknown")
                 if country not in country_groups:
                     country_groups[country] = []
@@ -1194,12 +1198,6 @@ class RealTimeBot:
     async def dpf_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         t0 = time.perf_counter()
 
-        def normalize_brand(b):
-            KEEP_BRANDS = {"96G", "BLG", "WDB"}
-            s = "" if b is None else str(b).strip()
-            s = s.rstrip("12").upper()      
-            return s if s in KEEP_BRANDS else "KZO"
-            
         if not await self._ensure_allowed(update, "dpf"):
             return
         
@@ -1301,14 +1299,9 @@ class RealTimeBot:
                 pgw_label = f" ({selected_pgw})" if selected_pgw else ""
                 return await update.effective_chat.send_message(f"No deposit data for {scope_label}{pgw_label}.")
 
+            self._assign_report_groups(rows, "/dpf")
             country_groups: dict[str, list[dict]] = {}
             for r in rows:
-                r["group"] = str(r["group"]).replace("PH96G1", "96G1")\
-                        .replace("PHBLG", "BLG")\
-                        .replace("1", "").replace("2", "")\
-                        .replace("KZG", "KZO").replace("PHK", "KZO").replace("IDK", "KZO").replace("PKK", "KZO")
-                
-                r["group"] = normalize_brand(r["group"])
                 c = (r.get("country") or "") or "Unknown"
                 country_groups.setdefault(c, []).append(r)
 
