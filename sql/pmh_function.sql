@@ -31,12 +31,6 @@
 -- =====================================================================
 
 WITH
-bounds AS (
-  SELECT
-    TIMESTAMP_SUB(TIMESTAMP(@target_date), INTERVAL 1 DAY) AS lo,
-    TIMESTAMP_ADD(TIMESTAMP(@target_date), INTERVAL 2 DAY) AS hi
-),
-
 tz_fallback AS (
   SELECT country, tz
   FROM UNNEST([
@@ -68,12 +62,16 @@ tx AS (
     f.method,
     f.netAmount
   FROM `kz-kura.prod_dw.fundingTx` AS f
-  CROSS JOIN bounds b
   WHERE f.type   IN ('deposit', 'withdraw')
     AND f.status IN ('completed', 'error', 'timeout', 'errors')
     AND f.deletedAt IS NULL
-    AND f.insertedAt >= b.lo                        -- partition lower bound only
-    AND f.createdAt  >= b.lo AND f.createdAt < b.hi -- business time
+    -- Partition filter (BigQuery requires one on insertedAt). It must be a constant
+    -- expression written inline here: a bound taken from a CTE is not used for
+    -- partition elimination and the query is rejected.
+    -- [target - 1d, target + 2d) covers the local day in any timezone UTC-6..UTC+8.
+    AND f.insertedAt >= TIMESTAMP_SUB(TIMESTAMP(@target_date), INTERVAL 1 DAY)   -- lower bound only: a row never lands before it is created
+    AND f.createdAt  >= TIMESTAMP_SUB(TIMESTAMP(@target_date), INTERVAL 1 DAY)
+    AND f.createdAt  <  TIMESTAMP_ADD(TIMESTAMP(@target_date), INTERVAL 2 DAY)
   QUALIFY ROW_NUMBER() OVER (PARTITION BY f.id ORDER BY f.updatedAt DESC) = 1
 ),
 

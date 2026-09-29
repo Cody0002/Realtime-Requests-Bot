@@ -40,13 +40,6 @@ bounds AS (
     DATE_SUB(@as_of_date, INTERVAL 7 DAY)                            AS prev_end
 ),
 
-scan AS (
-  SELECT
-    TIMESTAMP_SUB(TIMESTAMP(b.prev_start), INTERVAL 1 DAY) AS lo,
-    TIMESTAMP_ADD(TIMESTAMP(b.cur_end),    INTERVAL 2 DAY) AS hi
-  FROM bounds b
-),
-
 tz_fallback AS (
   SELECT country, tz
   FROM UNNEST([
@@ -77,12 +70,16 @@ tx AS (
     f.method,
     f.netAmount
   FROM `kz-kura.prod_dw.fundingTx` AS f
-  CROSS JOIN scan s
   WHERE f.type   IN ('deposit', 'withdraw')
     AND f.status IN ('completed', 'error', 'timeout', 'errors')
     AND f.deletedAt IS NULL
-    AND f.insertedAt >= s.lo                        -- partition lower bound only
-    AND f.createdAt  >= s.lo AND f.createdAt < s.hi -- business time
+    -- Partition filter (BigQuery requires one on insertedAt). It must be a constant
+    -- expression written inline here: a bound taken from a CTE is not used for
+    -- partition elimination and the query is rejected.
+    -- [prev_start - 1d, as_of + 2d) covers both week spans in any timezone UTC-6..UTC+8.
+    AND f.insertedAt >= TIMESTAMP_SUB(TIMESTAMP(DATE_SUB(DATE_TRUNC(@as_of_date, WEEK(MONDAY)), INTERVAL 7 DAY)), INTERVAL 1 DAY)   -- lower bound only
+    AND f.createdAt  >= TIMESTAMP_SUB(TIMESTAMP(DATE_SUB(DATE_TRUNC(@as_of_date, WEEK(MONDAY)), INTERVAL 7 DAY)), INTERVAL 1 DAY)
+    AND f.createdAt  <  TIMESTAMP_ADD(TIMESTAMP(@as_of_date), INTERVAL 2 DAY)
   QUALIFY ROW_NUMBER() OVER (PARTITION BY f.id ORDER BY f.updatedAt DESC) = 1
 ),
 

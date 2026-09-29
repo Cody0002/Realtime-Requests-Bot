@@ -8,7 +8,9 @@ pulling a change to sql/ and before restarting the bot.
     python scripts/dry_run_sql.py --execute   # also runs each query once and
                                               # prints the row count + GB scanned.
 
-Exit code 0 = every case passed, 1 = at least one failed (details printed).
+Exit code 0 = every report query passed, 1 = at least one failed (details printed).
+usage_function.sql (hidden admin /usage) is reported as WARN, not FAIL: it only
+needs bigquery.jobs.list and does not block a deploy.
 """
 from __future__ import annotations
 
@@ -23,6 +25,9 @@ from google.cloud import bigquery
 
 ROOT = Path(__file__).resolve().parents[1]
 SQL_DIR = ROOT / "sql"
+
+# Failures here are reported but do not fail the run.
+NON_BLOCKING = {"usage_function.sql"}
 
 P = bigquery.ScalarQueryParameter
 
@@ -78,6 +83,7 @@ def main() -> int:
 
     today = dt.date.today().isoformat()
     failed = 0
+    warned = 0
     for name, cases in build_cases(today).items():
         if args.only and name != args.only:
             continue
@@ -100,11 +106,18 @@ def main() -> int:
                 else:
                     print(f"OK    {name:36s} {label:22s} would scan {gb:6.3f} GB")
             except Exception as e:  # noqa: BLE001 - report every failure, keep going
-                failed += 1
                 msg = str(e).splitlines()[0]
-                print(f"FAIL  {name:36s} {label:22s} {msg}")
+                if name in NON_BLOCKING:
+                    warned += 1
+                    print(f"WARN  {name:36s} {label:22s} {msg}")
+                else:
+                    failed += 1
+                    print(f"FAIL  {name:36s} {label:22s} {msg}")
 
-    print(f"\n{'ALL PASSED' if not failed else f'{failed} FAILED'}")
+    summary = "ALL PASSED" if not failed else f"{failed} FAILED"
+    if warned:
+        summary += f" ({warned} non-blocking warning(s): /usage only)"
+    print(f"\n{summary}")
     return 1 if failed else 0
 
 

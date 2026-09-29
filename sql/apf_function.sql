@@ -39,14 +39,9 @@
 -- =====================================================================
 
 WITH
--- Same UTC scan window the kz-dp-prod query used: from 3 UTC days ago minus 8h
+-- Scan window (written inline in members / funding, see the partition-filter note
+-- there): same UTC window the kz-dp-prod query used, from 3 UTC days ago minus 8h
 -- (start of local today-2 in UTC+8) up to now. Also the base for deposit ranking.
-global_window AS (
-  SELECT
-    TIMESTAMP_SUB(TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)), INTERVAL 8 HOUR) AS lo,
-    CURRENT_TIMESTAMP()                                                                 AS hi
-),
-
 tz_fallback AS (
   SELECT country, tz
   FROM UNNEST([
@@ -87,10 +82,12 @@ members AS (
     m.accountId,
     m.registerAt
   FROM `kz-kura.prod_dw.member` AS m
-  CROSS JOIN global_window gw
-  WHERE m.insertedAt >= gw.lo               -- landing time: never before registerAt
-    AND m.registerAt >= gw.lo
-    AND m.registerAt <  gw.hi
+  WHERE TRUE
+    -- Partition filter (BigQuery requires one on insertedAt). It must be a constant
+    -- expression written inline here: a bound taken from a CTE is not used for
+    -- partition elimination and the query is rejected.
+    AND m.insertedAt >= TIMESTAMP_SUB(TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)), INTERVAL 8 HOUR)   -- landing time: never before registerAt
+    AND m.registerAt >= TIMESTAMP_SUB(TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)), INTERVAL 8 HOUR)
   QUALIFY ROW_NUMBER() OVER (PARTITION BY m.id ORDER BY m.registerAt DESC) = 1
 ),
 
@@ -135,14 +132,14 @@ funding AS (
     f.completedAt,
     f.reqCurrency
   FROM `kz-kura.prod_dw.fundingTx` AS f
-  CROSS JOIN global_window gw
   WHERE f.type      = 'deposit'
     AND f.status    = 'completed'
     AND f.deletedAt IS NULL
-    AND f.insertedAt >= gw.lo
-    AND f.insertedAt <  gw.hi
-    AND f.createdAt  >= gw.lo
-    AND f.createdAt  <  gw.hi
+    -- Partition filter (BigQuery requires one on insertedAt). It must be a constant
+    -- expression written inline here: a bound taken from a CTE is not used for
+    -- partition elimination and the query is rejected.
+    AND f.insertedAt >= TIMESTAMP_SUB(TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)), INTERVAL 8 HOUR)
+    AND f.createdAt  >= TIMESTAMP_SUB(TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)), INTERVAL 8 HOUR)
   QUALIFY ROW_NUMBER() OVER (PARTITION BY f.id ORDER BY f.updatedAt DESC) = 1
 ),
 

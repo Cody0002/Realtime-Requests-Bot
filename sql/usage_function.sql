@@ -1,5 +1,7 @@
 -- Hidden /usage command: last 3 days query usage for current bot identity.
 -- Uses billed bytes so the number maps to chargeable query volume.
+-- JOBS_BY_USER only needs bigquery.jobs.list (own jobs). JOBS_BY_PROJECT needed
+-- bigquery.jobs.listAll, which the Kura job-project identity does not have.
 WITH days AS (
   SELECT day
   FROM UNNEST(
@@ -14,7 +16,7 @@ agg AS (
     DATE(creation_time, 'Asia/Bangkok') AS day,
     COUNT(1) AS query_count,
     SUM(COALESCE(total_bytes_billed, 0)) AS total_bytes_billed
-  FROM `__PROJECT_ID__`.`region-__BQ_LOCATION__`.INFORMATION_SCHEMA.JOBS_BY_PROJECT
+  FROM `__PROJECT_ID__`.`region-__BQ_LOCATION__`.INFORMATION_SCHEMA.JOBS_BY_USER
   WHERE job_type = 'QUERY'
     AND state = 'DONE'
     AND user_email = SESSION_USER()

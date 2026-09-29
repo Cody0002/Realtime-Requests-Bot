@@ -61,6 +61,19 @@ python scripts/dry_run_sql.py --execute
 # 4. Restart the bot the usual way (systemd service / screen session).
 ```
 
+## Fixes after the first dry run on the server
+- **"Cannot query over table 'kz-kura.prod_dw.fundingTx' without a filter over column(s)
+  'insertedAt' that can be used for partition elimination"** (seen on `pmh_week`). The
+  table requires a partition filter, and BigQuery only accepts one written as a constant
+  expression directly in the `WHERE` clause. Taking the bound from a CTE via `CROSS JOIN`
+  does not count, especially when that CTE is referenced more than once. Every query now
+  writes its `insertedAt` / `createdAt` bounds inline.
+- **`/usage`: "Access Denied ... bigquery.jobs.listAll ... JOBS_BY_PROJECT"**. The query now
+  reads `INFORMATION_SCHEMA.JOBS_BY_USER`, which only needs `bigquery.jobs.list` and returns
+  the same data (the bot identity's own jobs). If it still fails, the identity lacks
+  `bigquery.jobs.list` on `kz-dp-ops`. `/usage` is a hidden admin command, so the dry-run
+  script reports it as a WARN and it does not block the deploy.
+
 ## Smoke test in Telegram after restart
 - `/dpf a`, `/dpf BD`, `/dpf dpp BD`, `/dpf dpp TH`
 - `/dist a <today YYYYMMDD>`, `/dist dpp PH <today>`

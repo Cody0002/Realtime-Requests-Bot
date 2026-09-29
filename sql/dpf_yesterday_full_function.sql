@@ -28,14 +28,6 @@
 -- =====================================================================
 
 WITH
--- Local "yesterday" across UTC-6..UTC+8 never reaches further back than ~48h,
--- so a constant 4-day UTC bound covers it and still prunes partitions.
-global_window AS (
-  SELECT
-    TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 4 DAY) AS lo,
-    CURRENT_TIMESTAMP()                                AS hi
-),
-
 tz_fallback AS (
   SELECT country, tz
   FROM UNNEST([
@@ -74,15 +66,16 @@ funding AS (
     f.netAmount,
     f.reqCurrency
   FROM `kz-kura.prod_dw.fundingTx` AS f
-  CROSS JOIN global_window gw
   WHERE f.type      = 'deposit'
     AND f.status    = 'completed'
     AND f.deletedAt IS NULL
     AND f.netAmount IS NOT NULL
-    AND f.insertedAt >= gw.lo
-    AND f.insertedAt <  gw.hi
-    AND f.createdAt  >= gw.lo
-    AND f.createdAt  <  gw.hi
+    -- Partition filter (BigQuery requires one on insertedAt). It must be a constant
+    -- expression written inline here: a bound taken from a CTE is not used for
+    -- partition elimination and the query is rejected.
+    -- Local "yesterday" across UTC-6..UTC+8 never reaches back more than ~48h.
+    AND f.insertedAt >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 4 DAY)
+    AND f.createdAt  >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 4 DAY)
     AND (
       @selected_pgw IS NULL
       OR (

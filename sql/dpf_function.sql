@@ -36,14 +36,6 @@
 -- =====================================================================
 
 WITH
--- Constant UTC bound so BigQuery can prune partitions. 3 local days across
--- timezones spanning UTC-6..UTC+8 is at most ~3.6 days, so 4 days is enough.
-global_window AS (
-  SELECT
-    TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 4 DAY) AS lo,
-    CURRENT_TIMESTAMP()                                AS hi
-),
-
 -- Timezone fallback for accounts missing from brand_account. brand_account
 -- INNER JOINs analysis.group_config, so a brand whose group is absent from that
 -- allowlist would otherwise be dropped silently.
@@ -77,15 +69,16 @@ funding AS (
     f.method,
     f.providerKey
   FROM `kz-kura.prod_dw.fundingTx` AS f
-  CROSS JOIN global_window gw
   WHERE f.type      = 'deposit'
     AND f.status    = 'completed'          -- timed-out attempts are not money
     AND f.deletedAt IS NULL                -- paranoid model: soft deletes remain
     AND f.netAmount IS NOT NULL
-    AND f.insertedAt >= gw.lo              -- pipeline landing time (partition column)
-    AND f.insertedAt <  gw.hi
-    AND f.createdAt  >= gw.lo              -- business time
-    AND f.createdAt  <  gw.hi
+    -- Partition filter (BigQuery requires one on insertedAt). It must be a constant
+    -- expression written inline here: a bound taken from a CTE is not used for
+    -- partition elimination and the query is rejected.
+    -- 3 local days across UTC-6..UTC+8 is at most ~3.6 days, so 4 days is enough.
+    AND f.insertedAt >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 4 DAY)
+    AND f.createdAt  >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 4 DAY)
     AND (
       @selected_pgw IS NULL
       OR (
